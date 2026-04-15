@@ -74,6 +74,27 @@ public:
     InferenceBackend getBackend() const override { return InferenceBackend::TFLITE_CPU; }
     std::string getBackendName() const override { return "tflite-cpu"; }
 
+    bool setInputAndInvoke(const cv::Mat& frame) {
+        if (!interp_) return false;
+        const TfLiteIntArray* in_dims = interp_->input_tensor(0)->dims;
+        if (in_dims->size < 4) return false;
+        const int in_h = in_dims->data[1];
+        const int in_w = in_dims->data[2];
+        cv::Mat resized;
+        cv::resize(frame, resized, {in_w, in_h});
+
+        if (interp_->input_tensor(0)->type == kTfLiteFloat32) {
+            cv::Mat f;
+            resized.convertTo(f, CV_32F, 1.0 / 255.0);
+            std::memcpy(interp_->typed_input_tensor<float>(0), f.data,
+                        f.total() * f.elemSize());
+        } else {
+            std::memcpy(interp_->typed_input_tensor<uint8_t>(0), resized.data,
+                        resized.total() * resized.elemSize());
+        }
+        return interp_->Invoke() == kTfLiteOk;
+    }
+
     InferenceResult run(const cv::Mat& input) override {
         InferenceResult out;
         if (!interp_) return out;
@@ -115,23 +136,7 @@ public:
         if (!interp_) return out;
 
         // Resize + normalize into the input tensor.
-        const TfLiteIntArray* in_dims = interp_->input_tensor(0)->dims;
-        if (in_dims->size < 4) return out;
-        const int in_h = in_dims->data[1];
-        const int in_w = in_dims->data[2];
-        cv::Mat resized;
-        cv::resize(frame, resized, {in_w, in_h});
-
-        if (interp_->input_tensor(0)->type == kTfLiteFloat32) {
-            cv::Mat f;
-            resized.convertTo(f, CV_32F, 1.0 / 255.0);
-            std::memcpy(interp_->typed_input_tensor<float>(0), f.data,
-                        f.total() * f.elemSize());
-        } else {
-            std::memcpy(interp_->typed_input_tensor<uint8_t>(0), resized.data,
-                        resized.total() * resized.elemSize());
-        }
-        if (interp_->Invoke() != kTfLiteOk) return out;
+        if (!setInputAndInvoke(frame)) return out;
 
         const size_t num_outputs = interp_->outputs().size();
         const int W = frame.cols, H = frame.rows;
@@ -167,17 +172,28 @@ public:
             const int d2 = t->dims->data[2];
             // Heuristic: if d1 < d2, layout is [1, rows, cols] => rows=N.
             int rows, cols;
-            bool row_major;
-            if (d1 > d2) {
-                rows = d1; cols = d2; row_major = true;
+            bool row_major = (d1 > d2);
+            if (row_major) {
+                rows = d1; cols = d2;
             } else {
-                rows = d2; cols = d1; row_major = false;
+                rows = d2; cols = d1;
             }
+            
+            cv::Mat transposed;
+            const float* fast_data = data;
+            if (!row_major) {
+                cv::Mat tensorMat(d1, d2, CV_32F, const_cast<float*>(data));
+                cv::transpose(tensorMat, transposed);
+                fast_data = reinterpret_cast<float*>(transposed.data);
+                std::swap(rows, cols);
+                row_major = true;
+            }
+            
             const int num_classes = cols - 5;
             if (num_classes <= 0) return out;
             for (int i = 0; i < rows; ++i) {
                 auto val = [&](int j) -> float {
-                    return row_major ? data[i * cols + j] : data[j * rows + i];
+                    return fast_data[i * cols + j];
                 };
                 const float obj = val(4);
                 if (obj < conf_threshold) continue;
@@ -228,22 +244,7 @@ public:
         std::vector<ClassificationResult> out;
         if (!interp_) return out;
 
-        const TfLiteIntArray* in_dims = interp_->input_tensor(0)->dims;
-        if (in_dims->size < 4) return out;
-        const int in_h = in_dims->data[1];
-        const int in_w = in_dims->data[2];
-        cv::Mat resized;
-        cv::resize(frame, resized, {in_w, in_h});
-        if (interp_->input_tensor(0)->type == kTfLiteFloat32) {
-            cv::Mat f;
-            resized.convertTo(f, CV_32F, 1.0 / 255.0);
-            std::memcpy(interp_->typed_input_tensor<float>(0), f.data,
-                        f.total() * f.elemSize());
-        } else {
-            std::memcpy(interp_->typed_input_tensor<uint8_t>(0), resized.data,
-                        resized.total() * resized.elemSize());
-        }
-        if (interp_->Invoke() != kTfLiteOk) return out;
+        if (!setInputAndInvoke(frame)) return out;
 
         const TfLiteTensor* t = interp_->output_tensor(0);
         size_t n = 1;
@@ -282,18 +283,7 @@ public:
 
     // ---- Depth -------------------------------------------------------------
     cv::Mat estimateDepth(const cv::Mat& frame) override {
-        if (!interp_) return {};
-        const TfLiteIntArray* in_dims = interp_->input_tensor(0)->dims;
-        if (in_dims->size < 4) return {};
-        const int in_h = in_dims->data[1];
-        const int in_w = in_dims->data[2];
-        cv::Mat resized;
-        cv::resize(frame, resized, {in_w, in_h});
-        cv::Mat f;
-        resized.convertTo(f, CV_32F, 1.0 / 255.0);
-        std::memcpy(interp_->typed_input_tensor<float>(0), f.data,
-                    f.total() * f.elemSize());
-        if (interp_->Invoke() != kTfLiteOk) return {};
+        if (!setInputAndInvoke(frame)) return {};
 
         const TfLiteTensor* t = interp_->output_tensor(0);
         if (t->dims->size < 3) return {};

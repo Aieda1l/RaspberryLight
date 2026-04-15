@@ -514,7 +514,9 @@ HttpResponse RestApi::handleRecordingStream(const HttpRequest& req) {
         return jsonError(404, "no recording specified");
     }
     const std::string& rel = it->second;
-    if (rel.find("..") != std::string::npos) return jsonError(400, "invalid path");
+    if (rel.find("..") != std::string::npos || (!rel.empty() && rel[0] == '/') || fs::path(rel).is_absolute()) {
+        return jsonError(400, "invalid path");
+    }
     fs::path p = fs::path(kRecordingDir) / rel;
     std::error_code ec;
     if (!fs::exists(p, ec) || !fs::is_regular_file(p, ec)) {

@@ -126,10 +126,6 @@ HttpServer::HttpServer() = default;
 
 HttpServer::~HttpServer() {
     stop();
-    std::lock_guard<std::mutex> lk(workers_mu_);
-    for (auto& t : workers_) {
-        if (t.joinable()) t.detach();
-    }
 }
 
 void HttpServer::route(const std::string& method, const std::string& path, HttpHandler h) {
@@ -249,24 +245,8 @@ void HttpServer::acceptLoop() {
             if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
             continue;
         }
-        std::thread t([this, fd]() { handleConnection(fd); });
-        {
-            std::lock_guard<std::mutex> lk(workers_mu_);
-            workers_.push_back(std::move(t));
-            // Drop any completed workers from the list so it doesn't grow
-            // without bound over the life of the daemon.
-            for (auto it = workers_.begin(); it != workers_.end();) {
-                if (!it->joinable()) { it = workers_.erase(it); }
-                else ++it;
-            }
-        }
+        std::thread([this, fd]() { handleConnection(fd); }).detach();
     }
-    // Detach all remaining workers on shutdown.
-    std::lock_guard<std::mutex> lk(workers_mu_);
-    for (auto& t : workers_) {
-        if (t.joinable()) t.detach();
-    }
-    workers_.clear();
 }
 
 void HttpServer::handleConnection(int fd) {

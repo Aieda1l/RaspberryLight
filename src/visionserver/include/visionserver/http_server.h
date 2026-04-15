@@ -103,8 +103,6 @@ private:
     std::atomic<bool> stopping_{false};
     std::thread accept_thread_;
     std::vector<Route> routes_;
-    std::mutex workers_mu_;
-    std::vector<std::thread> workers_;
 };
 
 }  // namespace limelight
