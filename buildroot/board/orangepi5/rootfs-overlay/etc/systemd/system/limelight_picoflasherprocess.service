@@ -1,0 +1,12 @@
+[Unit]
+Description=Limelight_picoflasherprocess
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/bin/picoflasherprocess
+ExecStart=/usr/local/bin/picoflasherprocess/picoflasherprocess /usr/local/bin/picoflasherprocess/fw.uf2
+
+[Install]
+WantedBy=default.target

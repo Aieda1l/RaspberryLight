@@ -1,0 +1,12 @@
+[Unit]
+Description=Limelight_gadget
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/bin/gadget
+ExecStart=/usr/local/bin/gadget/gadget
+
+[Install]
+WantedBy=default.target

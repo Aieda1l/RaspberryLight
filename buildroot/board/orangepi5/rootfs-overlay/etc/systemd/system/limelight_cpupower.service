@@ -1,0 +1,13 @@
+[Unit]
+Description=Limelight_cpupower
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/cpupower -c all frequency-set --governor performance
+Restart=on-failure
+RestartSec=2
+StartLimitInterval=0
+StartLimitBurst=1000
+
+[Install]
+WantedBy=default.target

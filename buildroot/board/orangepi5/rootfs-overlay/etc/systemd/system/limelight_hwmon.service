@@ -1,0 +1,16 @@
+[Unit]
+Description=limelight_hwmon
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/bin/hwmon
+ExecStart=/usr/local/bin/hwmon/hwmon
+Restart=always
+RestartSec=5
+StartLimitInterval=0
+StartLimitBurst=1000
+
+[Install]
+WantedBy=default.target

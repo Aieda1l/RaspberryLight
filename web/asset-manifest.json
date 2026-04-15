@@ -1,0 +1,17 @@
+{
+  "files": {
+    "main.css": "/static/css/main.5c00d589.css",
+    "main.js": "/static/js/main.86291cd2.js",
+    "static/media/frc2025field.png": "/static/media/frc2025field.b8f35e3fa45da4504f1d.png",
+    "static/media/spritesheet_41h12standard.png": "/static/media/spritesheet_41h12standard.82527efe5c8acd7f4152.png",
+    "static/media/VSCODE.png": "/static/media/VSCODE.29e94036047ada2cb8af.png",
+    "static/media/BLOCKS.png": "/static/media/BLOCKS.373aeeac057a77336b3b.png",
+    "static/media/spritesheet_36h11classic.png": "/static/media/spritesheet_36h11classic.a37b86210bebde96a230.png",
+    "static/media/logo_scaled7.svg": "/static/media/logo_scaled7.64124c7806dfd95a28de7092ea32265b.svg",
+    "index.html": "/index.html"
+  },
+  "entrypoints": [
+    "static/css/main.5c00d589.css",
+    "static/js/main.86291cd2.js"
+  ]
+}

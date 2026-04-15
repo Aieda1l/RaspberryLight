@@ -1,0 +1,16 @@
+[Unit]
+Description=Limelight_visionserver
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/bin/visionserver
+ExecStart=/usr/local/bin/visionserver/visionserver
+Restart=always
+RestartSec=5
+StartLimitInterval=0
+StartLimitBurst=1000
+
+[Install]
+WantedBy=default.target
