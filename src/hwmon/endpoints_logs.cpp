@@ -48,16 +48,16 @@ json buildServiceLogsJson(const std::string& service, int lines) {
         return j;
     }
 
-    std::string log_cmd = "journalctl -u " + service + " -b --no-pager -n " +
-                          std::to_string(lines);
-    if (auto out = execCapture(log_cmd)) {
+    if (auto out = execCaptureArgv({"journalctl", "-u", service, "-b",
+                                     "--no-pager", "-n",
+                                     std::to_string(lines)})) {
         j["lines"] = *out;
     } else {
         j["lines"] = "";
     }
 
-    std::string status_cmd = "systemctl status " + service + " --no-pager";
-    if (auto out = execCapture(status_cmd)) {
+    if (auto out = execCaptureArgv({"systemctl", "status", service,
+                                     "--no-pager"})) {
         j["status"] = *out;
     } else {
         j["status"] = "";
@@ -114,9 +114,9 @@ json buildBootListJson() {
         b["boot_info"] = rest;
 
         // Fetch first log timestamp via journalctl's JSON output.
-        std::string ts_cmd = "journalctl --boot=" + boot_id +
-                             " --no-pager --lines=1 --output=json 2>/dev/null";
-        if (auto out = execCapture(ts_cmd)) {
+        if (auto out = execCaptureArgv({"journalctl", "--boot=" + boot_id,
+                                         "--no-pager", "--lines=1",
+                                         "--output=json"})) {
             try {
                 auto entry = json::parse(*out);
                 if (entry.contains("__REALTIME_TIMESTAMP")) {
@@ -156,17 +156,27 @@ json buildBootLogsJson(const std::string& boot_id, int lines) {
         return j;
     }
 
-    std::string cmd = "journalctl --boot=" + boot_id + " --no-pager --lines=" +
-                      std::to_string(lines);
-    if (auto out = execCapture(cmd)) {
+    if (auto out = execCaptureArgv({"journalctl", "--boot=" + boot_id,
+                                     "--no-pager",
+                                     "--lines=" + std::to_string(lines)})) {
         j["lines"] = *out;
     } else {
         j["lines"] = "";
     }
 
-    std::string info_cmd = "journalctl --list-boots --no-pager | grep " + boot_id;
-    if (auto out = execCapture(info_cmd)) {
-        j["boot_info"] = *out;
+    // "journalctl --list-boots | grep <boot_id>" — replace shell pipe with
+    // in-process filter so boot_id can't be interpreted as shell syntax.
+    if (auto out = execCaptureArgv({"journalctl", "--list-boots", "--no-pager"})) {
+        std::istringstream iss(*out);
+        std::string line;
+        std::string matched;
+        while (std::getline(iss, line)) {
+            if (line.find(boot_id) != std::string::npos) {
+                matched += line;
+                matched += '\n';
+            }
+        }
+        j["boot_info"] = matched;
     } else {
         j["boot_info"] = "";
     }

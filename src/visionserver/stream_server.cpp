@@ -55,7 +55,7 @@ StreamServer::StreamServer(int port) : port_(port) {}
 StreamServer::~StreamServer() { stop(); }
 
 bool StreamServer::start() {
-    puts("getaddrinfo");
+    spdlog::debug("StreamServer[{}]: getaddrinfo", port_);
 
     char port_str[16];
     std::snprintf(port_str, sizeof(port_str), "%d", port_);
@@ -68,38 +68,34 @@ bool StreamServer::start() {
     addrinfo* res = nullptr;
     int rc = ::getaddrinfo(nullptr, port_str, &hints, &res);
     if (rc != 0) {
-        std::fprintf(stderr, "getaddrinfo error: %s\n", ::gai_strerror(rc));
+        spdlog::error("StreamServer[{}]: getaddrinfo: {}", port_, ::gai_strerror(rc));
         return false;
     }
 
-    puts("creating listening socket");
+    spdlog::debug("StreamServer[{}]: creating listening socket", port_);
     listen_fd_ = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (listen_fd_ == -1) {
-        std::fprintf(stderr, "Failed to create socket. Error: %d\n", errno);
+        spdlog::error("StreamServer[{}]: socket() failed, errno={}", port_, errno);
         ::freeaddrinfo(res);
         return false;
     }
 
     int on = 1;
     if (::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
-        std::fwrite("setsockopt failed", 1, 17, stderr);
+        spdlog::warn("StreamServer[{}]: SO_REUSEADDR failed", port_);
     }
     if (::setsockopt(listen_fd_, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) == -1) {
-        std::fwrite("disable nagle failed", 1, 20, stderr);
-    } else {
-        std::fwrite("disable nagle success", 1, 21, stderr);
+        spdlog::warn("StreamServer[{}]: TCP_NODELAY failed", port_);
     }
 
     timeval tv{0, 500000};
     if (::setsockopt(listen_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
-        std::fwrite("set timeout failed", 1, 18, stderr);
-    } else {
-        std::fwrite("set timeout success", 1, 19, stderr);
+        spdlog::warn("StreamServer[{}]: SO_RCVTIMEO failed", port_);
     }
 
-    puts("binding port");
+    spdlog::debug("StreamServer[{}]: binding port", port_);
     if (::bind(listen_fd_, res->ai_addr, res->ai_addrlen) == -1) {
-        std::fprintf(stderr, "Failed to bind socket to port. Error: %d\n", errno);
+        spdlog::error("StreamServer[{}]: bind failed, errno={}", port_, errno);
         ::freeaddrinfo(res);
         ::close(listen_fd_);
         listen_fd_ = -1;
@@ -107,9 +103,9 @@ bool StreamServer::start() {
     }
     ::freeaddrinfo(res);
 
-    puts("listening..");
+    spdlog::debug("StreamServer[{}]: listening", port_);
     if (::listen(listen_fd_, 5) == -1) {
-        std::fprintf(stderr, "listen failed.  Error: %d\n", errno);
+        spdlog::error("StreamServer[{}]: listen failed, errno={}", port_, errno);
         ::close(listen_fd_);
         listen_fd_ = -1;
         return false;

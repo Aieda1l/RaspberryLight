@@ -140,12 +140,28 @@ bool PythonRuntime::loadScript(int pipeline_index, const std::string& path) {
         PyGILState_Release(gil);
         return false;
     }
-    std::fseek(f, 0, SEEK_END);
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+        std::fclose(f);
+        impl_->last_error = "seek failed: " + path;
+        PyGILState_Release(gil);
+        return false;
+    }
     long sz = std::ftell(f);
+    if (sz < 0 || sz > (64L * 1024L * 1024L)) {
+        std::fclose(f);
+        impl_->last_error = "bad size for " + path;
+        PyGILState_Release(gil);
+        return false;
+    }
     std::fseek(f, 0, SEEK_SET);
-    std::string src(sz, '\0');
-    std::fread(src.data(), 1, sz, f);
+    std::string src(static_cast<size_t>(sz), '\0');
+    size_t got = std::fread(src.data(), 1, static_cast<size_t>(sz), f);
     std::fclose(f);
+    if (got != static_cast<size_t>(sz)) {
+        impl_->last_error = "short read from " + path;
+        PyGILState_Release(gil);
+        return false;
+    }
 
     PyObject* code = Py_CompileString(src.c_str(), path.c_str(), Py_file_input);
     if (!code) {
@@ -224,18 +240,24 @@ PythonCallResult PythonRuntime::runPipeline(int pipeline_index,
         return out;
     }
 
+    PyObject* py_h = PyLong_FromLong(h);
+    PyObject* py_w = PyLong_FromLong(w);
+    PyObject* py_c = PyLong_FromLong(c);
     PyObject* args = PyTuple_Pack(6,
         it->second,
         py_bytes,
-        PyLong_FromLong(h),
-        PyLong_FromLong(w),
-        PyLong_FromLong(c),
+        py_h,
+        py_w,
+        py_c,
         py_llrobot);
     PyObject* res = PyObject_CallObject(call_run, args);
     Py_DECREF(call_run);
     Py_DECREF(args);
     Py_DECREF(py_bytes);
     Py_DECREF(py_llrobot);
+    Py_XDECREF(py_h);
+    Py_XDECREF(py_w);
+    Py_XDECREF(py_c);
 
     if (!res) {
         PyErr_Print();

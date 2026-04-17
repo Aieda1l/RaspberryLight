@@ -100,16 +100,19 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    const auto& active_config = pipeline_mgr.getActiveConfig();
-    limelight::hal::CameraControls cam_ctrl;
-    cam_ctrl.exposure     = active_config.exposure;
-    cam_ctrl.gain         = active_config.lcgain;
-    cam_ctrl.red_balance  = active_config.red_balance;
-    cam_ctrl.blue_balance = active_config.blue_balance;
-    cam_ctrl.black_level  = active_config.black_level;
-    cam_ctrl.flip         = active_config.image_flip;
-    cam_ctrl.resolution   = active_config.pipeline_res;
-    camera->setControls(cam_ctrl);
+    {
+        const auto initial_config = pipeline_mgr.getConfigSnapshot(
+            pipeline_mgr.getActivePipelineIndex());
+        limelight::hal::CameraControls cam_ctrl;
+        cam_ctrl.exposure     = initial_config.exposure;
+        cam_ctrl.gain         = initial_config.lcgain;
+        cam_ctrl.red_balance  = initial_config.red_balance;
+        cam_ctrl.blue_balance = initial_config.blue_balance;
+        cam_ctrl.black_level  = initial_config.black_level;
+        cam_ctrl.flip         = initial_config.image_flip;
+        cam_ctrl.resolution   = initial_config.pipeline_res;
+        camera->setControls(cam_ctrl);
+    }
 
     if (!camera->startCapture()) {
         spdlog::error("Failed to start camera capture");
@@ -118,6 +121,8 @@ int main(int argc, char* argv[]) {
     spdlog::info("Camera started: {}x{} @ {}fps ({})",
                  camera->getInfo().width, camera->getInfo().height,
                  camera->getInfo().fps, camera->getInfo().sensor_name);
+
+    limelight::PipelineConfig active_config;  // re-populated each frame below
 
     // =========================================================
     // Phase 6: LED controller
@@ -191,8 +196,10 @@ int main(int argc, char* argv[]) {
     };
     rest_cbs.switchPipeline   = [&](int idx) { pipeline_mgr.setActivePipeline(idx); };
     rest_cbs.pipelineDefault  = [&]() {
-        int idx = pipeline_mgr.getActivePipelineIndex();
-        pipeline_mgr.getConfig(idx) = limelight::PipelineConfig{};
+        const int idx = pipeline_mgr.getActivePipelineIndex();
+        pipeline_mgr.mutateConfig(idx, [](limelight::PipelineConfig& c) {
+            c = limelight::PipelineConfig{};
+        });
         pipeline_mgr.setActivePipeline(idx);
     };
     rest_api.setCallbacks(std::move(rest_cbs));
@@ -211,6 +218,12 @@ int main(int argc, char* argv[]) {
     auto last_frame_ts = std::chrono::steady_clock::now();
 
     while (g_running.load()) {
+        // Re-sample the active pipeline config every frame so that a pipeline
+        // switch or a REST /update-pipeline takes effect immediately rather
+        // than staying bound to whatever slot was active at startup.
+        active_config = pipeline_mgr.getConfigSnapshot(
+            pipeline_mgr.getActivePipelineIndex());
+
         auto t_capture_start = std::chrono::steady_clock::now();
         cv::Mat frame = camera->getFrame(100);
         auto t_capture_end = std::chrono::steady_clock::now();
@@ -238,7 +251,7 @@ int main(int argc, char* argv[]) {
         // Publish to NetworkTables.
         nt_publisher.publish(result,
                              pipeline_mgr.getActivePipelineIndex(),
-                             pipeline_mgr.getActiveConfig().pipeline_type,
+                             active_config.pipeline_type,
                              capture_ms,
                              pipeline_ms);
         nt_publisher.publishHeartbeat();

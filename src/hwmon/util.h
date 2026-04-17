@@ -19,6 +19,11 @@ namespace limelight::hwmon {
 std::optional<std::string> execCapture(const std::string& cmd,
                                        int* exit_status_out = nullptr);
 
+// Shell-free variant: runs argv[0] via execvp with literal arguments. Prefer
+// this over execCapture when any argument is user-controlled.
+std::optional<std::string> execCaptureArgv(const std::vector<std::string>& argv,
+                                           int* exit_status_out = nullptr);
+
 // Read the entire contents of a file into a string. Returns nullopt on failure.
 std::optional<std::string> readFile(const std::string& path);
 

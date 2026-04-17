@@ -42,43 +42,68 @@ void PipelineManager::setActivePipeline(int index) {
     if (index < 0 || index >= NUM_PIPELINES) return;
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (pipelines_[active_index_]) {
-        pipelines_[active_index_]->onDeactivate();
+    const int prev = active_index_.load(std::memory_order_relaxed);
+    if (pipelines_[prev]) {
+        pipelines_[prev]->onDeactivate();
     }
-    active_index_ = index;
-    if (pipelines_[active_index_]) {
-        pipelines_[active_index_]->onActivate();
+    active_index_.store(index, std::memory_order_release);
+    if (pipelines_[index]) {
+        pipelines_[index]->onActivate();
     }
     spdlog::info("Switched to pipeline {}: {}", index, configs_[index].pipeline_type);
 }
 
 int PipelineManager::getActivePipelineIndex() const {
-    return active_index_;
+    return active_index_.load(std::memory_order_acquire);
 }
 
 Pipeline* PipelineManager::getActivePipeline() {
-    return pipelines_[active_index_].get();
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pipelines_[active_index_.load(std::memory_order_relaxed)].get();
 }
 
 const PipelineConfig& PipelineManager::getActiveConfig() const {
-    return configs_[active_index_];
+    // Retained for legacy callers. New code should use getConfigSnapshot().
+    return configs_[active_index_.load(std::memory_order_relaxed)];
+}
+
+PipelineConfig PipelineManager::getConfigSnapshot(int index) const {
+    if (index < 0 || index >= NUM_PIPELINES) return PipelineConfig{};
+    std::lock_guard<std::mutex> lock(mutex_);
+    return configs_[index];
 }
 
 PipelineConfig& PipelineManager::getConfig(int index) {
     return configs_[index];
 }
 
+void PipelineManager::mutateConfig(int index,
+                                   const std::function<void(PipelineConfig&)>& fn) {
+    if (index < 0 || index >= NUM_PIPELINES || !fn) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string prev_type = configs_[index].pipeline_type;
+    fn(configs_[index]);
+    if (configs_[index].pipeline_type != prev_type) {
+        rebuildPipeline(index);
+    } else if (pipelines_[index]) {
+        pipelines_[index]->configure(configs_[index]);
+    }
+}
+
 void PipelineManager::saveConfig(int index, const std::string& config_dir) {
+    if (index < 0 || index >= NUM_PIPELINES) return;
+    std::lock_guard<std::mutex> lock(mutex_);
     std::string path = config_dir + "/" + std::to_string(index) + ".vpr";
     configs_[index].save(path);
 }
 
 PipelineResult PipelineManager::processFrame(const cv::Mat& frame) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!pipelines_[active_index_]) {
+    const int idx = active_index_.load(std::memory_order_relaxed);
+    if (!pipelines_[idx]) {
         return PipelineResult{};
     }
-    return pipelines_[active_index_]->process(frame);
+    return pipelines_[idx]->process(frame);
 }
 
 void PipelineManager::rebuildPipeline(int index) {

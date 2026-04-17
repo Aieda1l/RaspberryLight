@@ -17,6 +17,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
@@ -275,26 +276,28 @@ void NetworkResponder::run() {
         sockaddr_in from{};
         socklen_t from_len = sizeof(from);
 
-        // After recvfrom, the original binary writes a trailing NUL at
-        // buf[n], then does fixed-width word compares that require the byte
-        // at offset kV1CompareLen-1 / kV2CompareLen-1 to be zero. The helper
-        // below replicates that exactly: payload length must be at least the
-        // magic length (without NUL) and the byte immediately after must be
-        // NUL, giving us a full-length memcmp against the magic+NUL literal.
-        auto matches = [&buf](std::size_t n, const char* magic,
-                              std::size_t compare_len) {
+        // The original binary writes a trailing NUL at buf[n], then does
+        // fixed-width word compares that require the byte at offset
+        // kV*CompareLen-1 to be zero. We do the same: cap n to the buffer,
+        // NUL-terminate once per packet, and then do pure memcmps below.
+        auto matches = [](const char* payload, std::size_t n,
+                          const char* magic, std::size_t compare_len) {
             const std::size_t magic_len = compare_len - 1;
             if (n < magic_len) return false;
-            buf[n] = '\0';
-            return std::memcmp(buf, magic, compare_len) == 0;
+            return std::memcmp(payload, magic, compare_len) == 0;
         };
 
         if (v1_fd_ >= 0 && FD_ISSET(v1_fd_, &rfds)) {
             from_len = sizeof(from);
             ssize_t n = ::recvfrom(v1_fd_, buf, kRequestBufSize, 0,
                                    reinterpret_cast<sockaddr*>(&from), &from_len);
-            if (n > 0 && matches(static_cast<std::size_t>(n), kV1Magic, kV1CompareLen)) {
-                handleV1Request(from);
+            if (n > 0) {
+                const auto nz = static_cast<std::size_t>(
+                    std::min<ssize_t>(n, kRequestBufSize));
+                buf[nz] = '\0';
+                if (matches(buf, nz, kV1Magic, kV1CompareLen)) {
+                    handleV1Request(from);
+                }
             }
         }
 
@@ -303,14 +306,16 @@ void NetworkResponder::run() {
             ssize_t n = ::recvfrom(v2_fd_, buf, kRequestBufSize, 0,
                                    reinterpret_cast<sockaddr*>(&from), &from_len);
             if (n > 0) {
-                const auto nz = static_cast<std::size_t>(n);
+                const auto nz = static_cast<std::size_t>(
+                    std::min<ssize_t>(n, kRequestBufSize));
+                buf[nz] = '\0';
                 // Decompiled FUN_00103460 exits the V2 recv loop when the
                 // payload matches either "LLPhoneHome" OR "LLPhoneHomeV2",
                 // then unconditionally replies in V2 format — so the V2
                 // socket happily accepts a V1 magic packet but always sends
                 // back a V2 response.
-                if (matches(nz, kV2Magic, kV2CompareLen) ||
-                    matches(nz, kV1Magic, kV1CompareLen)) {
+                if (matches(buf, nz, kV2Magic, kV2CompareLen) ||
+                    matches(buf, nz, kV1Magic, kV1CompareLen)) {
                     handleV2Request(from);
                 }
             }

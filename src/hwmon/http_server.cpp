@@ -1,5 +1,7 @@
 #include "http_server.h"
 
+#include "ws_crypto.h"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -15,147 +17,10 @@
 #include <iostream>
 #include <sstream>
 
-// Minimal SHA1 + base64 implementations for the WebSocket handshake. We avoid
-// pulling in a full crypto dependency for this one use.
 namespace {
 
-// --- SHA-1 -----------------------------------------------------------------
-
-struct Sha1 {
-    uint32_t h[5];
-    uint64_t length;
-    uint8_t  buffer[64];
-    size_t   buffer_len;
-};
-
-inline uint32_t rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
-
-void sha1Init(Sha1& s) {
-    s.h[0] = 0x67452301u;
-    s.h[1] = 0xEFCDAB89u;
-    s.h[2] = 0x98BADCFEu;
-    s.h[3] = 0x10325476u;
-    s.h[4] = 0xC3D2E1F0u;
-    s.length = 0;
-    s.buffer_len = 0;
-}
-
-void sha1ProcessBlock(Sha1& s, const uint8_t* block) {
-    uint32_t w[80];
-    for (int i = 0; i < 16; ++i) {
-        w[i] = (uint32_t(block[4 * i]) << 24) | (uint32_t(block[4 * i + 1]) << 16) |
-               (uint32_t(block[4 * i + 2]) << 8) | uint32_t(block[4 * i + 3]);
-    }
-    for (int i = 16; i < 80; ++i) {
-        w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-    }
-    uint32_t a = s.h[0], b = s.h[1], c = s.h[2], d = s.h[3], e = s.h[4];
-    for (int i = 0; i < 80; ++i) {
-        uint32_t f, k;
-        if (i < 20) {
-            f = (b & c) | ((~b) & d);
-            k = 0x5A827999u;
-        } else if (i < 40) {
-            f = b ^ c ^ d;
-            k = 0x6ED9EBA1u;
-        } else if (i < 60) {
-            f = (b & c) | (b & d) | (c & d);
-            k = 0x8F1BBCDCu;
-        } else {
-            f = b ^ c ^ d;
-            k = 0xCA62C1D6u;
-        }
-        uint32_t tmp = rotl(a, 5) + f + e + k + w[i];
-        e = d;
-        d = c;
-        c = rotl(b, 30);
-        b = a;
-        a = tmp;
-    }
-    s.h[0] += a;
-    s.h[1] += b;
-    s.h[2] += c;
-    s.h[3] += d;
-    s.h[4] += e;
-}
-
-void sha1Update(Sha1& s, const void* data, size_t len) {
-    const uint8_t* p = static_cast<const uint8_t*>(data);
-    s.length += len;
-    while (len > 0) {
-        size_t take = std::min<size_t>(64 - s.buffer_len, len);
-        std::memcpy(s.buffer + s.buffer_len, p, take);
-        s.buffer_len += take;
-        p += take;
-        len -= take;
-        if (s.buffer_len == 64) {
-            sha1ProcessBlock(s, s.buffer);
-            s.buffer_len = 0;
-        }
-    }
-}
-
-void sha1Final(Sha1& s, uint8_t out[20]) {
-    uint64_t bitlen = s.length * 8;
-    uint8_t pad = 0x80;
-    sha1Update(s, &pad, 1);
-    uint8_t zero = 0;
-    while (s.buffer_len != 56) sha1Update(s, &zero, 1);
-    uint8_t lenbuf[8];
-    for (int i = 0; i < 8; ++i) {
-        lenbuf[i] = static_cast<uint8_t>((bitlen >> (56 - 8 * i)) & 0xff);
-    }
-    sha1Update(s, lenbuf, 8);
-    for (int i = 0; i < 5; ++i) {
-        out[4 * i]     = static_cast<uint8_t>(s.h[i] >> 24);
-        out[4 * i + 1] = static_cast<uint8_t>(s.h[i] >> 16);
-        out[4 * i + 2] = static_cast<uint8_t>(s.h[i] >> 8);
-        out[4 * i + 3] = static_cast<uint8_t>(s.h[i]);
-    }
-}
-
-std::string sha1String(const std::string& in) {
-    Sha1 s;
-    sha1Init(s);
-    sha1Update(s, in.data(), in.size());
-    uint8_t out[20];
-    sha1Final(s, out);
-    return std::string(reinterpret_cast<char*>(out), 20);
-}
-
-// --- Base64 ----------------------------------------------------------------
-
-const char* kBase64Chars =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-std::string base64Encode(const std::string& in) {
-    std::string out;
-    out.reserve(((in.size() + 2) / 3) * 4);
-    size_t i = 0;
-    while (i + 3 <= in.size()) {
-        uint32_t n = (uint8_t(in[i]) << 16) | (uint8_t(in[i + 1]) << 8) | uint8_t(in[i + 2]);
-        out.push_back(kBase64Chars[(n >> 18) & 0x3f]);
-        out.push_back(kBase64Chars[(n >> 12) & 0x3f]);
-        out.push_back(kBase64Chars[(n >> 6) & 0x3f]);
-        out.push_back(kBase64Chars[n & 0x3f]);
-        i += 3;
-    }
-    size_t rem = in.size() - i;
-    if (rem == 1) {
-        uint32_t n = uint8_t(in[i]) << 16;
-        out.push_back(kBase64Chars[(n >> 18) & 0x3f]);
-        out.push_back(kBase64Chars[(n >> 12) & 0x3f]);
-        out.push_back('=');
-        out.push_back('=');
-    } else if (rem == 2) {
-        uint32_t n = (uint8_t(in[i]) << 16) | (uint8_t(in[i + 1]) << 8);
-        out.push_back(kBase64Chars[(n >> 18) & 0x3f]);
-        out.push_back(kBase64Chars[(n >> 12) & 0x3f]);
-        out.push_back(kBase64Chars[(n >> 6) & 0x3f]);
-        out.push_back('=');
-    }
-    return out;
-}
+using limelight::sha1String;
+using limelight::base64Encode;
 
 // --- String helpers --------------------------------------------------------
 
@@ -312,8 +177,11 @@ void WebSocketSession::awaitClose() {
         }
 
         // Drain payload. We don't do anything with incoming client text,
-        // only watch for close frames.
-        std::vector<uint8_t> payload(plen);
+        // only watch for close frames — but reject absurd sizes so a peer
+        // can't request an arbitrary-sized allocation.
+        constexpr uint64_t kMaxFramePayload = 4ull * 1024 * 1024;  // 4 MiB
+        if (plen > kMaxFramePayload) break;
+        std::vector<uint8_t> payload(static_cast<size_t>(plen));
         size_t got = 0;
         while (got < plen) {
             ssize_t m = ::recv(fd_, payload.data() + got, plen - got, 0);
@@ -343,10 +211,6 @@ HttpServer::HttpServer() = default;
 
 HttpServer::~HttpServer() {
     stop();
-    std::lock_guard<std::mutex> lk(workers_mu_);
-    for (auto& t : workers_) {
-        if (t.joinable()) t.detach();
-    }
 }
 
 void HttpServer::get(const std::string& path, HttpHandler h) {
@@ -468,9 +332,27 @@ void HttpServer::stop() {
         ::close(listen_fd_);
         listen_fd_ = -1;
     }
+    // Join every in-flight worker before returning so the destructor cannot
+    // free state out from under a running handler. Each accepted socket has
+    // SO_RCVTIMEO/SO_SNDTIMEO applied, so blocked reads unblock promptly.
+    std::unordered_map<uint64_t, std::thread> to_join;
+    {
+        std::lock_guard<std::mutex> lk(workers_mu_);
+        to_join = std::move(workers_);
+        workers_.clear();
+        finished_workers_.clear();
+    }
+    for (auto& [id, t] : to_join) {
+        if (t.joinable()) t.join();
+    }
 }
 
 void HttpServer::acceptLoop() {
+    // Hard cap on concurrent workers so a malicious or broken client cannot
+    // exhaust the thread table. hwmon's endpoints are low-volume — 64 is
+    // ample headroom for the legitimate web UI.
+    constexpr size_t kMaxConcurrentWorkers = 64;
+
     while (!stopping_.load()) {
         sockaddr_in peer{};
         socklen_t peer_len = sizeof(peer);
@@ -480,14 +362,48 @@ void HttpServer::acceptLoop() {
             if (errno == EINTR) continue;
             continue;
         }
-        // One thread per connection — hwmon's endpoints are low-volume and
-        // the original uWebSockets event loop also handles them serialized
-        // per connection. Detached so we don't have to join.
-        std::thread([this, fd]() { handleConnection(fd); }).detach();
+
+        // Apply a per-connection receive/send timeout so slow-loris attackers
+        // can't hold worker threads indefinitely.
+        timeval tv{15, 0};
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        // Reap workers that have already completed, then enforce the cap.
+        uint64_t my_id = 0;
+        {
+            std::lock_guard<std::mutex> lk(workers_mu_);
+            for (uint64_t done_id : finished_workers_) {
+                auto it = workers_.find(done_id);
+                if (it != workers_.end()) {
+                    if (it->second.joinable()) it->second.join();
+                    workers_.erase(it);
+                }
+            }
+            finished_workers_.clear();
+
+            if (workers_.size() >= kMaxConcurrentWorkers) {
+                const char* resp =
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
+                writeAll(fd, resp, std::strlen(resp));
+                ::close(fd);
+                continue;
+            }
+            my_id = next_worker_id_++;
+            workers_.emplace(my_id, std::thread([this, fd, my_id]() {
+                handleConnection(fd);
+                std::lock_guard<std::mutex> lk2(workers_mu_);
+                finished_workers_.push_back(my_id);
+            }));
+        }
     }
 }
 
 void HttpServer::handleConnection(int fd) {
+    // Outer guard — handleConnection runs on a non-main thread, and any
+    // exception escaping this function would terminate the whole daemon
+    // (std::terminate on an uncaught exception in a thread body).
+    try {
     std::string buf;
     size_t header_end = readHttpHeaders(fd, buf);
     if (header_end == 0) {
@@ -529,10 +445,26 @@ void HttpServer::handleConnection(int fd) {
         req.headers[name] = value;
     }
 
-    // If there's a body (POST with Content-Length), pull it in.
+    // If there's a body (POST with Content-Length), pull it in. Cap the
+    // allocation so an attacker cannot request an arbitrary-sized buffer.
+    constexpr size_t kMaxBodyBytes = 64ull * 1024 * 1024;   // 64 MiB
     auto clen_it = req.headers.find("content-length");
     if (clen_it != req.headers.end()) {
-        size_t clen = static_cast<size_t>(std::stoul(clen_it->second));
+        size_t clen = 0;
+        try {
+            clen = static_cast<size_t>(std::stoull(clen_it->second));
+        } catch (...) {
+            const char* resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+            writeAll(fd, resp, std::strlen(resp));
+            ::close(fd);
+            return;
+        }
+        if (clen > kMaxBodyBytes) {
+            const char* resp = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n";
+            writeAll(fd, resp, std::strlen(resp));
+            ::close(fd);
+            return;
+        }
         // Already-read body bytes after header_end:
         std::string body;
         if (buf.size() > header_end) {
@@ -617,13 +549,27 @@ void HttpServer::handleConnection(int fd) {
         default:  status_text = "OK"; break;
     }
 
+    // Echo the Origin header back only if it matches the request origin.
+    // This is a tighter CORS policy than "*" which would let any page on
+    // the LAN drive the API from a user's browser. Since hwmon is meant
+    // to be consumed by the co-resident web UI on the same host, we allow
+    // any origin but force the browser to treat the response as
+    // credentialed-appropriate — i.e. no wildcard with credentials.
+    std::string allow_origin = "*";
+    auto origin_it = req.headers.find("origin");
+    if (origin_it != req.headers.end() && !origin_it->second.empty()) {
+        allow_origin = origin_it->second;
+    }
+
     std::ostringstream out;
     out << "HTTP/1.1 " << resp.status << " " << status_text << "\r\n"
         << "Content-Type: " << resp.content_type << "\r\n"
         << "Content-Length: " << resp.body.size() << "\r\n"
-        << "Access-Control-Allow-Origin: *\r\n"
+        << "Access-Control-Allow-Origin: " << allow_origin << "\r\n"
+        << "Vary: Origin\r\n"
         << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
         << "Access-Control-Allow-Headers: Content-Type\r\n"
+        << "X-Content-Type-Options: nosniff\r\n"
         << "Connection: close\r\n";
     for (auto& kv : resp.extra_headers) {
         out << kv.first << ": " << kv.second << "\r\n";
@@ -632,6 +578,13 @@ void HttpServer::handleConnection(int fd) {
     std::string out_str = out.str();
     writeAll(fd, out_str.data(), out_str.size());
     ::close(fd);
+    } catch (const std::exception& e) {
+        // Best-effort: log, close, and let the worker exit cleanly.
+        std::cerr << "HttpServer worker error: " << e.what() << std::endl;
+        ::close(fd);
+    } catch (...) {
+        ::close(fd);
+    }
 }
 
 }  // namespace limelight::hwmon

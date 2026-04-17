@@ -101,6 +101,7 @@ add_library(limelight-common STATIC
     src/common/config.cpp
     src/common/pipeline_config.cpp
     src/common/field_map.cpp
+    src/common/ws_crypto.cpp
 )
 target_include_directories(limelight-common PUBLIC
     src/common/include
@@ -236,6 +237,7 @@ add_executable(hwmon
     src/hwmon/log_stream.cpp
 )
 target_link_libraries(hwmon PRIVATE
+    limelight-common
     nlohmann_json::nlohmann_json
     Threads::Threads
 )

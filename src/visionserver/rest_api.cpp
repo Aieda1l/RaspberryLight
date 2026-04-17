@@ -108,6 +108,23 @@ std::string queryStr(const std::unordered_map<std::string, std::string>& q,
     return it == q.end() ? fallback : it->second;
 }
 
+// Reject filenames that could escape their staging directory. Matches the
+// guard used by handleDeleteSnapshot / handleUploadPython / etc. — centralized
+// here so every upload endpoint applies the same rule.
+bool isSafeFilename(const std::string& name) {
+    if (name.empty() || name.size() > 255) return false;
+    if (name == "." || name == "..") return false;
+    if (name.find('/') != std::string::npos) return false;
+    if (name.find('\\') != std::string::npos) return false;
+    if (name.find("..") != std::string::npos) return false;
+    if (name.find('\0') != std::string::npos) return false;
+    return true;
+}
+
+inline bool validPipelineIndex(int idx) {
+    return idx >= 0 && idx < NUM_PIPELINES;
+}
+
 // Read a file to a string. Returns empty on failure.
 std::string slurpFile(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
@@ -328,7 +345,7 @@ HttpResponse RestApi::handleDump(const HttpRequest&) {
     json pipes = json::array();
     for (int i = 0; i < NUM_PIPELINES; ++i) {
         json pj;
-        to_json(pj, mgr_.getConfig(i));
+        to_json(pj, mgr_.getConfigSnapshot(i));
         pipes.push_back(std::move(pj));
     }
     j["pipelines"] = std::move(pipes);
@@ -414,6 +431,9 @@ HttpResponse RestApi::handleUploadSnapshot(const HttpRequest& req) {
         auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
         name = "snap_" + std::to_string(ms) + ".jpg";
     }
+    if (!isSafeFilename(name)) {
+        return jsonError(400, "invalid name");
+    }
     if (cbs_.uploadSnapshot) {
         if (!cbs_.uploadSnapshot(name, req.body)) {
             return jsonError(500, "upload failed");
@@ -446,8 +466,7 @@ HttpResponse RestApi::handleDeleteSnapshot(const HttpRequest& req) {
     auto q = parseQuery(req.query);
     std::string name = queryStr(q, "name");
     if (name.empty()) return jsonError(400, "missing name");
-    // Path traversal guard — only allow a bare filename.
-    if (name.find('/') != std::string::npos || name.find("..") != std::string::npos) {
+    if (!isSafeFilename(name)) {
         return jsonError(400, "invalid name");
     }
     bool ok = false;
@@ -479,7 +498,7 @@ HttpResponse RestApi::handleDeleteVideo(const HttpRequest& req) {
     auto q = parseQuery(req.query);
     std::string name = queryStr(q, "name");
     if (name.empty()) return jsonError(400, "missing name");
-    if (name.find('/') != std::string::npos || name.find("..") != std::string::npos) {
+    if (!isSafeFilename(name)) {
         return jsonError(400, "invalid name");
     }
     bool ok = false;
@@ -514,10 +533,23 @@ HttpResponse RestApi::handleRecordingStream(const HttpRequest& req) {
         return jsonError(404, "no recording specified");
     }
     const std::string& rel = it->second;
-    if (rel.find("..") != std::string::npos || (!rel.empty() && rel[0] == '/') || fs::path(rel).is_absolute()) {
+    if (rel.find("..") != std::string::npos ||
+        rel.find('\\') != std::string::npos ||
+        rel.find('\0') != std::string::npos ||
+        (!rel.empty() && rel[0] == '/') ||
+        fs::path(rel).is_absolute()) {
         return jsonError(400, "invalid path");
     }
     fs::path p = fs::path(kRecordingDir) / rel;
+    // Defense-in-depth: after composition, the resolved path must still live
+    // inside kRecordingDir. Prevents any traversal trick the string-level
+    // check didn't catch (symlinks, weird relative segments, etc.).
+    std::error_code canon_ec;
+    fs::path resolved = fs::weakly_canonical(p, canon_ec);
+    fs::path root = fs::weakly_canonical(fs::path(kRecordingDir), canon_ec);
+    if (canon_ec || resolved.string().rfind(root.string(), 0) != 0) {
+        return jsonError(400, "invalid path");
+    }
     std::error_code ec;
     if (!fs::exists(p, ec) || !fs::is_regular_file(p, ec)) {
         return jsonError(404, "not found");
@@ -575,16 +607,16 @@ HttpResponse RestApi::handlePipelineDefault(const HttpRequest&) {
 HttpResponse RestApi::handlePipelineAtIndex(const HttpRequest& req) {
     auto q = parseQuery(req.query);
     int idx = queryInt(q, "index", -1);
-    if (idx < 0 || idx >= NUM_PIPELINES) return jsonError(400, "bad index");
+    if (!validPipelineIndex(idx)) return jsonError(400, "bad index");
     json j;
-    to_json(j, mgr_.getConfig(idx));
+    to_json(j, mgr_.getConfigSnapshot(idx));
     return jsonOk(j);
 }
 
 HttpResponse RestApi::handlePipelineSwitch(const HttpRequest& req) {
     auto q = parseQuery(req.query);
     int idx = queryInt(q, "index", -1);
-    if (idx < 0 || idx >= NUM_PIPELINES) return jsonError(400, "bad index");
+    if (!validPipelineIndex(idx)) return jsonError(400, "bad index");
     if (cbs_.switchPipeline) cbs_.switchPipeline(idx);
     else mgr_.setActivePipeline(idx);
     return jsonOk({{"status", "ok"}, {"index", idx}});
@@ -595,7 +627,7 @@ HttpResponse RestApi::handlePipelineSwitch(const HttpRequest& req) {
 HttpResponse RestApi::handleUploadPipeline(const HttpRequest& req) {
     auto q = parseQuery(req.query);
     int idx = queryInt(q, "index", -1);
-    if (idx < 0 || idx >= NUM_PIPELINES) return jsonError(400, "bad index");
+    if (!validPipelineIndex(idx)) return jsonError(400, "bad index");
     if (cbs_.uploadPipeline) {
         if (!cbs_.uploadPipeline(idx, req.body)) return jsonError(500, "upload failed");
     } else {
@@ -608,7 +640,7 @@ HttpResponse RestApi::handleUploadPipeline(const HttpRequest& req) {
 HttpResponse RestApi::handleUploadFieldmap(const HttpRequest& req) {
     auto q = parseQuery(req.query);
     int idx = queryInt(q, "index", -1);
-    if (idx < 0 || idx >= NUM_PIPELINES) return jsonError(400, "bad index");
+    if (!validPipelineIndex(idx)) return jsonError(400, "bad index");
     if (cbs_.uploadFieldmap) {
         if (!cbs_.uploadFieldmap(idx, req.body)) return jsonError(500, "upload failed");
     } else {
@@ -622,7 +654,7 @@ HttpResponse RestApi::handleUploadNn(const HttpRequest& req) {
     auto q = parseQuery(req.query);
     int idx = queryInt(q, "index", -1);
     std::string kind = queryStr(q, "type", "detector");
-    if (idx < 0 || idx >= NUM_PIPELINES) return jsonError(400, "bad index");
+    if (!validPipelineIndex(idx)) return jsonError(400, "bad index");
     if (cbs_.uploadNn) {
         if (!cbs_.uploadNn(idx, req.body)) return jsonError(500, "upload failed");
     } else {
@@ -644,7 +676,7 @@ HttpResponse RestApi::handleUploadNnLabels(const HttpRequest& req) {
     auto q = parseQuery(req.query);
     int idx = queryInt(q, "index", -1);
     std::string kind = queryStr(q, "type", "detector");
-    if (idx < 0 || idx >= NUM_PIPELINES) return jsonError(400, "bad index");
+    if (!validPipelineIndex(idx)) return jsonError(400, "bad index");
     if (cbs_.uploadNnLabels) {
         if (!cbs_.uploadNnLabels(idx, req.body)) return jsonError(500, "upload failed");
     } else {
@@ -660,9 +692,8 @@ HttpResponse RestApi::handleUploadPython(const HttpRequest& req) {
     auto q = parseQuery(req.query);
     int idx = queryInt(q, "index", -1);
     std::string name = queryStr(q, "name", "pythonScript.py");
-    if (idx < 0 || idx >= NUM_PIPELINES) return jsonError(400, "bad index");
-    if (name.find('/') != std::string::npos || name.find("..") != std::string::npos)
-        return jsonError(400, "invalid name");
+    if (!validPipelineIndex(idx)) return jsonError(400, "bad index");
+    if (!isSafeFilename(name)) return jsonError(400, "invalid name");
     if (cbs_.uploadPython) {
         if (!cbs_.uploadPython(idx, req.body)) return jsonError(500, "upload failed");
     } else {
@@ -680,8 +711,8 @@ HttpResponse RestApi::handleUpdatePipeline(const HttpRequest& req) {
     } else {
         try {
             json patch = json::parse(req.body);
-            auto& cfg = mgr_.getConfig(mgr_.getActivePipelineIndex());
-            from_json(patch, cfg);
+            mgr_.mutateConfig(mgr_.getActivePipelineIndex(),
+                              [&](PipelineConfig& cfg) { from_json(patch, cfg); });
         } catch (const std::exception& e) {
             return jsonError(400, e.what());
         }

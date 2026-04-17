@@ -103,8 +103,16 @@ public:
         auto* in_tensor = interp_->typed_input_tensor<float>(0);
         if (!in_tensor) return out;
 
-        // Copy bytes — caller is responsible for resize/normalize.
-        std::memcpy(in_tensor, input.data, input.total() * input.elemSize());
+        // Copy bytes — caller is responsible for resize/normalize. Cap by the
+        // actual tensor byte size so a mismatched input can't overrun.
+        const size_t tensor_bytes = interp_->input_tensor(0)->bytes;
+        const size_t input_bytes  = input.total() * input.elemSize();
+        if (input_bytes > tensor_bytes) {
+            spdlog::warn("run(): input {} B exceeds tensor {} B — skipping",
+                         input_bytes, tensor_bytes);
+            return out;
+        }
+        std::memcpy(in_tensor, input.data, input_bytes);
 
         if (interp_->Invoke() != kTfLiteOk) {
             spdlog::error("Failed to invoke tflite!");
@@ -147,7 +155,19 @@ public:
             const float* classes = interp_->typed_output_tensor<float>(1);
             const float* scores  = interp_->typed_output_tensor<float>(2);
             const float* num_f   = interp_->typed_output_tensor<float>(3);
-            const int num = static_cast<int>(num_f ? num_f[0] : 0);
+            if (!boxes || !classes || !scores || !num_f) return out;
+
+            // Cap `num` by what the tensors can actually hold so a malformed
+            // model (num_f larger than allocated rows) can't OOB-read.
+            const size_t boxes_elems   = interp_->output_tensor(0)->bytes / sizeof(float);
+            const size_t classes_elems = interp_->output_tensor(1)->bytes / sizeof(float);
+            const size_t scores_elems  = interp_->output_tensor(2)->bytes / sizeof(float);
+            const int max_by_tensor = static_cast<int>(std::min({
+                boxes_elems / 4, classes_elems, scores_elems}));
+            int num = static_cast<int>(num_f[0]);
+            if (num < 0) num = 0;
+            if (num > max_by_tensor) num = max_by_tensor;
+
             for (int i = 0; i < num; ++i) {
                 if (scores[i] < conf_threshold) continue;
                 const float y1 = boxes[i * 4 + 0] * H;

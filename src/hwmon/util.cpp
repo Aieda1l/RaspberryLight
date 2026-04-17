@@ -3,9 +3,13 @@
 #include <array>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
+#include <vector>
+#include <fcntl.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 namespace limelight::hwmon {
 
@@ -29,6 +33,63 @@ std::optional<std::string> execCapture(const std::string& cmd, int* exit_status_
         } else {
             *exit_status_out = -1;
         }
+    }
+    return out;
+}
+
+// Shell-free variant. Runs argv[0] via execvp with no shell interpretation, so
+// argument strings can contain arbitrary bytes without metacharacter concerns.
+// Returns std::nullopt on fork/exec failure.
+std::optional<std::string> execCaptureArgv(const std::vector<std::string>& argv,
+                                           int* exit_status_out) {
+    if (exit_status_out) *exit_status_out = -1;
+    if (argv.empty()) return std::nullopt;
+
+    int pipefd[2];
+    if (::pipe(pipefd) != 0) return std::nullopt;
+
+    pid_t pid = ::fork();
+    if (pid < 0) {
+        ::close(pipefd[0]);
+        ::close(pipefd[1]);
+        return std::nullopt;
+    }
+    if (pid == 0) {
+        // Child: hook stdout to pipe, drop stdin/stderr.
+        ::dup2(pipefd[1], STDOUT_FILENO);
+        int dn = ::open("/dev/null", O_RDWR);
+        if (dn >= 0) {
+            ::dup2(dn, STDIN_FILENO);
+            ::dup2(dn, STDERR_FILENO);
+            if (dn > STDERR_FILENO) ::close(dn);
+        }
+        ::close(pipefd[0]);
+        ::close(pipefd[1]);
+
+        std::vector<char*> c_argv;
+        c_argv.reserve(argv.size() + 1);
+        for (const auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
+        c_argv.push_back(nullptr);
+        ::execvp(c_argv[0], c_argv.data());
+        _exit(127);
+    }
+
+    ::close(pipefd[1]);
+    std::string out;
+    std::array<char, 4096> buf{};
+    while (true) {
+        ssize_t n = ::read(pipefd[0], buf.data(), buf.size());
+        if (n <= 0) break;
+        out.append(buf.data(), static_cast<size_t>(n));
+    }
+    ::close(pipefd[0]);
+
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) break;
+    }
+    if (exit_status_out) {
+        *exit_status_out = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     }
     return out;
 }

@@ -108,7 +108,16 @@ private:
     int listen_fd_ = -1;
     std::atomic<bool> stopping_{false};
     std::vector<Route> routes_;
-    std::vector<std::thread> workers_;
+
+    // Active worker threads are stored in a map keyed by a monotonically
+    // increasing id. Each worker, on exit, pushes its own id onto
+    // finished_workers_ so the accept loop (and stop()) can reap and join
+    // the corresponding entry. This gives us a bounded thread count without
+    // detaching — which is what protects us from the use-after-free that
+    // the previous destructor risked.
+    std::unordered_map<uint64_t, std::thread> workers_;
+    std::vector<uint64_t> finished_workers_;
+    uint64_t next_worker_id_ = 0;
     std::mutex workers_mu_;
 };
 
