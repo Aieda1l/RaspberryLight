@@ -125,6 +125,7 @@ elseif(LIMELIGHT_PLATFORM STREQUAL "OPI5")
     list(APPEND HAL_SOURCES
         src/hal/platforms/opi5/opi5_camera.cpp
         src/hal/platforms/opi5/opi5_gpio.cpp
+        src/hal/platforms/opi5/ws2812_driver.cpp
         src/hal/platforms/opi5/opi5_thermal.cpp
         src/hal/platforms/opi5/opi5_npu.cpp
     )
