@@ -14,6 +14,7 @@ void from_json(const nlohmann::json& j, GlobalSettings& s) {
     if (j.contains("modbus_port")) j.at("modbus_port").get_to(s.modbus_port);
     if (j.contains("nt_server")) j.at("nt_server").get_to(s.nt_server);
     if (j.contains("usb_id")) j.at("usb_id").get_to(s.usb_id);
+    if (j.contains("allow_python_upload")) j.at("allow_python_upload").get_to(s.allow_python_upload);
 }
 
 void to_json(nlohmann::json& j, const GlobalSettings& s) {
@@ -26,7 +27,8 @@ void to_json(nlohmann::json& j, const GlobalSettings& s) {
         {"team_number", s.team_number},
         {"modbus_port", s.modbus_port},
         {"nt_server", s.nt_server},
-        {"usb_id", s.usb_id}
+        {"usb_id", s.usb_id},
+        {"allow_python_upload", s.allow_python_upload}
     };
 }
 

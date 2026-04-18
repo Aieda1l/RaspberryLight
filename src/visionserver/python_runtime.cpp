@@ -25,6 +25,20 @@ namespace limelight {
 
 namespace {
 
+// RAII guard for PyGILState_Ensure / PyGILState_Release.  Every early-exit
+// path in runPipeline / loadScript used to have to remember to release the
+// GIL; forgetting one deadlocks every other Python caller in the process.
+// The destructor makes that impossible.
+class GilGuard {
+public:
+    GilGuard() : st_(PyGILState_Ensure()) {}
+    ~GilGuard() { PyGILState_Release(st_); }
+    GilGuard(const GilGuard&) = delete;
+    GilGuard& operator=(const GilGuard&) = delete;
+private:
+    PyGILState_STATE st_;
+};
+
 // Convert a cv::Mat (BGR uint8) into a flat python `bytes` object. We do
 // NOT build a numpy array directly — numpy's C API requires linking against
 // numpy internals, and the user scripts we ship expect an OpenCV-style Mat
@@ -128,29 +142,26 @@ PythonRuntime::~PythonRuntime() {
 }
 
 bool PythonRuntime::loadScript(int pipeline_index, const std::string& path) {
-    std::lock_guard<std::mutex> lk(mu_);
-
-    PyGILState_STATE gil = PyGILState_Ensure();
-    impl_->ensureShim();
-
-    // Read the source file manually so we can pass a friendly module name.
+    // Read the source file outside the GIL — no Python calls involved, and
+    // it can be multi-MB for large scripts.  A separate thread wanting the
+    // GIL shouldn't wait on our disk read.
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) {
+        std::lock_guard<std::mutex> lk(mu_);
         impl_->last_error = "Unable to open " + path;
-        PyGILState_Release(gil);
         return false;
     }
     if (std::fseek(f, 0, SEEK_END) != 0) {
         std::fclose(f);
+        std::lock_guard<std::mutex> lk(mu_);
         impl_->last_error = "seek failed: " + path;
-        PyGILState_Release(gil);
         return false;
     }
     long sz = std::ftell(f);
     if (sz < 0 || sz > (64L * 1024L * 1024L)) {
         std::fclose(f);
+        std::lock_guard<std::mutex> lk(mu_);
         impl_->last_error = "bad size for " + path;
-        PyGILState_Release(gil);
         return false;
     }
     std::fseek(f, 0, SEEK_SET);
@@ -158,16 +169,19 @@ bool PythonRuntime::loadScript(int pipeline_index, const std::string& path) {
     size_t got = std::fread(src.data(), 1, static_cast<size_t>(sz), f);
     std::fclose(f);
     if (got != static_cast<size_t>(sz)) {
+        std::lock_guard<std::mutex> lk(mu_);
         impl_->last_error = "short read from " + path;
-        PyGILState_Release(gil);
         return false;
     }
+
+    std::lock_guard<std::mutex> lk(mu_);
+    GilGuard gil;
+    impl_->ensureShim();
 
     PyObject* code = Py_CompileString(src.c_str(), path.c_str(), Py_file_input);
     if (!code) {
         PyErr_Print();
         impl_->last_error = "Compile error in " + path;
-        PyGILState_Release(gil);
         return false;
     }
     const std::string mod_name = "ll_pipeline_" + std::to_string(pipeline_index);
@@ -176,7 +190,6 @@ bool PythonRuntime::loadScript(int pipeline_index, const std::string& path) {
     if (!new_mod) {
         PyErr_Print();
         impl_->last_error = "Module load failed: " + path;
-        PyGILState_Release(gil);
         return false;
     }
     auto it = impl_->modules.find(pipeline_index);
@@ -185,20 +198,18 @@ bool PythonRuntime::loadScript(int pipeline_index, const std::string& path) {
     }
     impl_->modules[pipeline_index] = new_mod;
     impl_->last_error.clear();
-    PyGILState_Release(gil);
     spdlog::info("Loaded Python pipeline {} from {}", pipeline_index, path);
     return true;
 }
 
 void PythonRuntime::unloadScript(int pipeline_index) {
     std::lock_guard<std::mutex> lk(mu_);
-    PyGILState_STATE gil = PyGILState_Ensure();
+    GilGuard gil;
     auto it = impl_->modules.find(pipeline_index);
     if (it != impl_->modules.end()) {
         Py_DECREF(it->second);
         impl_->modules.erase(it);
     }
-    PyGILState_Release(gil);
 }
 
 PythonCallResult PythonRuntime::runPipeline(int pipeline_index,
@@ -214,7 +225,7 @@ PythonCallResult PythonRuntime::runPipeline(int pipeline_index,
         return out;
     }
 
-    PyGILState_STATE gil = PyGILState_Ensure();
+    GilGuard gil;
 
     // Build the bytes -> call_run(mod, data, h, w, c, llrobot) invocation.
     const int h = image.rows;
@@ -236,7 +247,6 @@ PythonCallResult PythonRuntime::runPipeline(int pipeline_index,
         out.error = "_ll_shim.call_run missing";
         Py_DECREF(py_bytes);
         Py_DECREF(py_llrobot);
-        PyGILState_Release(gil);
         return out;
     }
 
@@ -262,7 +272,6 @@ PythonCallResult PythonRuntime::runPipeline(int pipeline_index,
     if (!res) {
         PyErr_Print();
         out.error = "runPipeline raised";
-        PyGILState_Release(gil);
         return out;
     }
 
@@ -300,7 +309,6 @@ PythonCallResult PythonRuntime::runPipeline(int pipeline_index,
     }
 
     Py_DECREF(res);
-    PyGILState_Release(gil);
     out.ok = true;
     return out;
 }

@@ -96,7 +96,14 @@ private:
     std::string nt_server_;
 
     std::atomic<uint64_t> heartbeat_{0};
-    std::mutex mutex_;
+
+    // Mutex split — publish() runs every frame on the vision thread, while
+    // setCallbacks() is rare but touches a different subset of state.  Using
+    // separate mutexes means the hot publish path never waits on someone
+    // installing callbacks, and NT listener threads only contend with
+    // setCallbacks() for a few instructions.
+    std::mutex pub_mutex_;  // publishers + ntcore handles
+    std::mutex cb_mutex_;   // callback struct only
 };
 
 }  // namespace limelight

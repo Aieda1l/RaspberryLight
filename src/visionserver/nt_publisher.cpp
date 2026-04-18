@@ -161,7 +161,7 @@ NTPublisher::NTPublisher(const std::string& nt_server, int team_number, int usb_
 NTPublisher::~NTPublisher() { stop(); }
 
 void NTPublisher::setCallbacks(Callbacks cb) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(cb_mutex_);
     impl_->cb = std::move(cb);
 }
 
@@ -258,22 +258,35 @@ bool NTPublisher::start() {
     // swapping the Callbacks struct via setCallbacks() after start().  The
     // original implementation copied the std::function by reference, so a
     // post-start reassignment left dangling slots that threw bad_function_call.
+    //
+    // cb_mutex_ guards the Callbacks struct from concurrent setCallbacks()
+    // writes; it's a separate mutex from pub_mutex_ so frame publishing on
+    // the vision thread never serializes against NT listener callbacks.
     Impl* ip = impl_.get();
+    std::mutex* cb_mu = &cb_mutex_;
     auto hasCb  = [ip](auto Callbacks::* m) { return static_cast<bool>(ip->cb.*m); };
-    auto fireD  = [ip](auto Callbacks::* m, double v) {
-        if (ip->cb.*m) (ip->cb.*m)(v);
+    auto fireD  = [ip, cb_mu](auto Callbacks::* m, double v) {
+        std::function<void(double)> fn;
+        { std::lock_guard<std::mutex> lk(*cb_mu); fn = ip->cb.*m; }
+        if (fn) fn(v);
     };
-    auto fireI  = [ip](auto Callbacks::* m, int v) {
-        if (ip->cb.*m) (ip->cb.*m)(v);
+    auto fireI  = [ip, cb_mu](auto Callbacks::* m, int v) {
+        std::function<void(int)> fn;
+        { std::lock_guard<std::mutex> lk(*cb_mu); fn = ip->cb.*m; }
+        if (fn) fn(v);
     };
-    auto fireV  = [ip](auto Callbacks::* m, std::vector<double> v) {
-        if (ip->cb.*m) (ip->cb.*m)(std::move(v));
+    auto fireV  = [ip, cb_mu](auto Callbacks::* m, std::vector<double> v) {
+        std::function<void(std::vector<double>)> fn;
+        { std::lock_guard<std::mutex> lk(*cb_mu); fn = ip->cb.*m; }
+        if (fn) fn(std::move(v));
     };
-    auto fireA6 = [ip](auto Callbacks::* m, std::vector<double> v) {
-        if (ip->cb.*m) {
+    auto fireA6 = [ip, cb_mu](auto Callbacks::* m, std::vector<double> v) {
+        std::function<void(std::array<double, 6>)> fn;
+        { std::lock_guard<std::mutex> lk(*cb_mu); fn = ip->cb.*m; }
+        if (fn) {
             std::array<double, 6> arr{};
             for (size_t i = 0; i < std::min<size_t>(6, v.size()); ++i) arr[i] = v[i];
-            (ip->cb.*m)(arr);
+            fn(arr);
         }
     };
 
@@ -326,7 +339,7 @@ void NTPublisher::publish(const PipelineResult& result,
                           const std::string& active_pipeline_type,
                           double capture_latency_ms,
                           double pipeline_latency_ms) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(pub_mutex_);
     if (!impl_->table) return;
 
     // --- Metadata --------------------------------------------------------
@@ -390,7 +403,7 @@ void NTPublisher::publishHeartbeat() {
 }
 
 void NTPublisher::publishJson(const std::string& json_payload) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(pub_mutex_);
     impl_->pubJson.Set(json_payload);
 }
 

@@ -46,9 +46,10 @@ std::vector<uint8_t> slurpBytes(const std::string& path) {
     if (!in) return {};
     in.seekg(0, std::ios::end);
     const auto sz = static_cast<size_t>(in.tellg());
+    if (sz == 0 || sz > (256u << 20)) return {};  // reject empty / >256 MB
     in.seekg(0, std::ios::beg);
     std::vector<uint8_t> buf(sz);
-    in.read(reinterpret_cast<char*>(buf.data()), sz);
+    if (!in.read(reinterpret_cast<char*>(buf.data()), sz)) return {};
     return buf;
 }
 
@@ -186,14 +187,28 @@ public:
         InferenceResult r = run(resized);
         if (r.output_data.empty() || r.output_shape.size() < 3) return out;
 
-        const int rows = r.output_shape[1];
-        const int cols = r.output_shape[2];
+        // YOLOv5 RKNN exports are [1, N, 85] (row-major). YOLOv8 exports are
+        // [1, 84, N] (column-major). Heuristic: if d1 < d2, it's column-major
+        // and we transpose into a row-major scratch buffer before parsing.
+        int rows = r.output_shape[1];
+        int cols = r.output_shape[2];
+        const bool row_major = (rows > cols);
+        std::vector<float> transposed;
+        const float* data = r.output_data.data();
+        if (!row_major) {
+            transposed.resize(static_cast<size_t>(rows) * cols);
+            for (int i = 0; i < rows; ++i)
+                for (int j = 0; j < cols; ++j)
+                    transposed[j * rows + i] = data[i * cols + j];
+            std::swap(rows, cols);
+            data = transposed.data();
+        }
         if (rows <= 0 || cols <= 6) return out;
         const int num_classes = cols - 5;
         const int W = frame.cols, H = frame.rows;
 
         for (int i = 0; i < rows; ++i) {
-            const float* row = r.output_data.data() + i * cols;
+            const float* row = data + i * cols;
             const float obj = row[4];
             if (obj < conf_threshold) continue;
             int best_c = 0;
@@ -242,7 +257,7 @@ public:
         cv::resize(frame, resized, {in_w, in_h});
 
         InferenceResult r = run(resized);
-        if (r.output_data.empty()) return out;
+        if (r.output_data.empty() || top_k <= 0) return out;
 
         std::vector<std::pair<float, int>> scored;
         scored.reserve(r.output_data.size());

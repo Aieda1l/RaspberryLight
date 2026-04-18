@@ -689,6 +689,13 @@ HttpResponse RestApi::handleUploadNnLabels(const HttpRequest& req) {
 }
 
 HttpResponse RestApi::handleUploadPython(const HttpRequest& req) {
+    // Gate: uploaded Python runs in-process with full root privileges via
+    // the embedded CPython interpreter.  Require explicit opt-in from
+    // global.settings so a stock install can't be pwned by a single POST.
+    if (!settings_.allow_python_upload) {
+        return jsonError(403,
+            "python uploads disabled (set allow_python_upload=true in global.settings)");
+    }
     auto q = parseQuery(req.query);
     int idx = queryInt(q, "index", -1);
     std::string name = queryStr(q, "name", "pythonScript.py");
