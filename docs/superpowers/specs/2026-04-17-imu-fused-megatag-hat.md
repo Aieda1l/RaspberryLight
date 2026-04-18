@@ -35,7 +35,8 @@ The hat is a custom PCB that mounts on the OPi5 40-pin header and carries:
 | WS2812B / SK6812 LED strip header | SPI1 MOSI via 74AHCT125 level shifter | 5V strip supply, 1000 µF reservoir cap, 500 Ω series R |
 | Fan header | RK3588 hardware PWM | Optional tach input; PWM is sufficient for closed loop |
 | Status LEDs | 3× GPIOs (power / heartbeat / link) | Dumb LEDs, direct drive through current-limit resistors |
-| Buck-boost DC-DC | Pure hardware | Feeds 5V into the 40-pin header, bypassing USB-C PD |
+| Buck-boost DC-DC (controller-based) | Pure hardware | Feeds 5V into the 40-pin header, bypassing USB-C PD |
+| Input protection: high-power TVS diode, LC filter, reverse-polarity FET | Pure hardware | Robot bus hardening ahead of the buck-boost |
 | OV9281 | CSI ribbon direct to OPi5 | Not on the hat; listed for completeness |
 | Hailo-8 | M.2 M-Key on OPi5 | Not on the hat; listed for completeness |
 
