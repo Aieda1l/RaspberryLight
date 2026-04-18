@@ -1,6 +1,8 @@
 #include "hal/camera.h"
 #include "hal/gpio.h"
+#include "hal/imu.h"
 #include "hal/npu.h"
+#include "hal/status_leds.h"
 #include "hal/thermal.h"
 #include "hal/usb_gadget.h"
 
@@ -11,6 +13,8 @@
 #elif defined(PLATFORM_OPI5)
 #include "../platforms/opi5/opi5_camera.h"
 #include "../platforms/opi5/opi5_gpio.h"
+#include "../platforms/opi5/opi5_imu_bno085.h"
+#include "../platforms/opi5/opi5_status_leds.h"
 #include "../platforms/opi5/opi5_thermal.h"
 #endif
 
@@ -43,6 +47,25 @@ std::unique_ptr<Thermal> Thermal::create() {
     return std::make_unique<Opi5Thermal>();
 #else
     #error "No platform defined."
+#endif
+}
+
+std::unique_ptr<Imu> Imu::create() {
+#if defined(PLATFORM_OPI5)
+    return std::make_unique<Opi5Imu>();
+#else
+    // No default IMU on RPi: the original Limelight 4 has one wired
+    // directly to the Pi header, but on non-OPi5 ports we simply return
+    // nullptr and let the pipeline fall back to external-gyro mode.
+    return nullptr;
+#endif
+}
+
+std::unique_ptr<StatusLeds> StatusLeds::create() {
+#if defined(PLATFORM_OPI5)
+    return std::make_unique<Opi5StatusLeds>();
+#else
+    return nullptr;
 #endif
 }
 

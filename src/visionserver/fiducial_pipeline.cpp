@@ -18,6 +18,8 @@
 
 #include "visionserver/fiducial_pipeline.h"
 
+#include "hal/imu.h"
+
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 #include <spdlog/spdlog.h>
@@ -53,6 +55,66 @@ void FiducialPipeline::configure(const PipelineConfig& config) {
 }
 
 void FiducialPipeline::setFieldMap(const FieldMap& fmap) { field_map_ = fmap; }
+
+void FiducialPipeline::setImu(const hal::Imu* imu) { imu_ = imu; }
+
+void FiducialPipeline::setRobotOrientation(const std::array<double, 6>& o) {
+    // Limelight NT layout: [yaw, yawRate, pitch, pitchRate, roll, rollRate]
+    // degrees, converted to rad here.
+    robot_yaw_rad_.store(o[0] * CV_PI / 180.0, std::memory_order_relaxed);
+    robot_yaw_valid_.store(true, std::memory_order_release);
+}
+
+void FiducialPipeline::setImuMode(int mode) {
+    imu_mode_.store(std::max(0, std::min(4, mode)), std::memory_order_relaxed);
+}
+
+void FiducialPipeline::setImuAssistAlpha(double alpha) {
+    imu_assist_alpha_.store(std::clamp(alpha, 0.0, 1.0),
+                            std::memory_order_relaxed);
+}
+
+double FiducialPipeline::fusedYawRad(bool& out_valid) const {
+    const int    mode  = imu_mode_.load(std::memory_order_relaxed);
+    const bool   ext_v = robot_yaw_valid_.load(std::memory_order_acquire);
+    const double ext   = robot_yaw_rad_.load(std::memory_order_relaxed);
+
+    hal::Orientation int_sample{};
+    if (imu_) int_sample = imu_->latest();
+    const bool   int_v = int_sample.valid;
+    const double in    = int_sample.yaw_rad;
+
+    out_valid = true;
+    switch (mode) {
+        case kImuModeExternal:
+            out_valid = ext_v;
+            return ext;
+        case kImuModeInternal:
+            out_valid = int_v;
+            return in;
+        case kImuModeExternalFallback:
+            if (ext_v) return ext;
+            out_valid = int_v;
+            return in;
+        case kImuModeInternalSeeded:
+            // Internal is the source of truth; external acts as a prior we
+            // absorbed at tare time.  Here that reduces to "internal only."
+            out_valid = int_v;
+            return in;
+        case kImuModeAssistBlend:
+        default: {
+            if (!ext_v && !int_v) { out_valid = false; return 0.0; }
+            if (!ext_v) return in;
+            if (!int_v) return ext;
+            const double a = imu_assist_alpha_.load(std::memory_order_relaxed);
+            // Shortest-path blend: handle wrap around ±pi.
+            double d = in - ext;
+            while (d >  CV_PI) d -= 2 * CV_PI;
+            while (d < -CV_PI) d += 2 * CV_PI;
+            return ext + a * d;
+        }
+    }
+}
 
 void FiducialPipeline::rebuildDetector() {
     if (!detector_) return;
@@ -235,6 +297,20 @@ PipelineResult FiducialPipeline::process(const cv::Mat& frame) {
                     result.botpose = rvecTvecToPose(rvec_bot, tvec_bot);
                     result.botpose_blue = result.botpose;
                     result.botpose_red  = result.botpose;
+
+                    // MegaTag2 tier-A: override the classic yaw with the
+                    // fused IMU yaw.  Translation is kept from the classic
+                    // solve — a full yaw-constrained re-solve would give
+                    // slightly tighter x/y, but the single-tag variant here
+                    // matches what most FRC teams actually deploy.
+                    bool fused_valid = false;
+                    const double yaw_fused_rad = fusedYawRad(fused_valid);
+                    if (fused_valid && result.botpose.size() == 6) {
+                        result.botpose_orb = result.botpose;
+                        result.botpose_orb[5] = yaw_fused_rad * 180.0 / CV_PI;
+                        result.botpose_orb_wpiblue = result.botpose_orb;
+                        result.botpose_orb_wpired  = result.botpose_orb;
+                    }
                 }
             }
         }

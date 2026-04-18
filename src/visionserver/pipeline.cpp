@@ -35,6 +35,9 @@ std::string PipelineResult::to_json() const {
     j["botpose"] = botpose;
     j["botpose_wpiblue"] = botpose_blue;
     j["botpose_wpired"] = botpose_red;
+    j["botpose_orb"] = botpose_orb;
+    j["botpose_orb_wpiblue"] = botpose_orb_wpiblue;
+    j["botpose_orb_wpired"] = botpose_orb_wpired;
     j["targetpose_robotspace"] = targetpose_robotspace;
     j["targetpose_cameraspace"] = targetpose_cameraspace;
 

@@ -20,7 +20,9 @@
 #include "visionserver/rest_api.h"
 #include "hal/camera.h"
 #include "hal/gpio.h"
+#include "hal/imu.h"
 #include "hal/npu.h"
+#include "hal/status_leds.h"
 
 #include <spdlog/spdlog.h>
 
@@ -131,6 +133,29 @@ int main(int argc, char* argv[]) {
     auto gpio = limelight::hal::Gpio::create();
     gpio->init();
 
+    // Status LEDs (hat): power / heartbeat / link.  Degrades gracefully
+    // on dev boards without the hat — init() returns false and we skip.
+    auto status_leds = limelight::hal::StatusLeds::create();
+    const bool have_status_leds = status_leds && status_leds->init();
+    if (have_status_leds) {
+        status_leds->set(limelight::hal::StatusLed::POWER, limelight::hal::StatusState::ON);
+        status_leds->set(limelight::hal::StatusLed::HEARTBEAT,
+                         limelight::hal::StatusState::BLINK_SLOW);
+        status_leds->set(limelight::hal::StatusLed::LINK,
+                         limelight::hal::StatusState::OFF);
+    }
+
+    // IMU (hat): BNO085 for MegaTag2.  Null when the hat isn't present;
+    // the fiducial pipeline falls back to external yaw or classic pose.
+    auto imu = limelight::hal::Imu::create();
+    const bool have_imu = imu && imu->init();
+    if (have_imu) {
+        spdlog::info("IMU online (on-hat BNO085)");
+    } else {
+        spdlog::info("IMU not available — MegaTag2 will use robot_orientation only");
+    }
+    pipeline_mgr.setImu(have_imu ? imu.get() : nullptr);
+
     // =========================================================
     // Phase 8: WebSocket server ("WEBSOCK")
     // =========================================================
@@ -168,10 +193,29 @@ int main(int argc, char* argv[]) {
             pipeline_mgr.setActivePipeline(idx);
         }
     };
+    nt_cbs.on_robot_orientation = [&](std::array<double, 6> o) {
+        pipeline_mgr.setRobotOrientation(o);
+    };
+    nt_cbs.on_imu_mode = [&](int mode) {
+        pipeline_mgr.setImuMode(mode);
+    };
+    nt_cbs.on_imu_assist_alpha = [&](double alpha) {
+        pipeline_mgr.setImuAssistAlpha(alpha);
+    };
     nt_publisher.setCallbacks(std::move(nt_cbs));
 
     if (!nt_publisher.start()) {
         spdlog::error("Failed to start NT client");
+        if (have_status_leds) {
+            status_leds->set(limelight::hal::StatusLed::LINK,
+                             limelight::hal::StatusState::BLINK_FAST);
+        }
+    } else if (have_status_leds) {
+        // Solid-on after the NT client starts; robot-side connection state
+        // tracking would require polling nt::GetConnections(), which we do
+        // opportunistically in the main loop below.
+        status_leds->set(limelight::hal::StatusLed::LINK,
+                         limelight::hal::StatusState::BLINK_SLOW);
     }
 
     // =========================================================
@@ -299,6 +343,15 @@ int main(int argc, char* argv[]) {
     camera->stopCapture();
     camera->close();
     gpio->setLedOff();
+    if (have_status_leds) {
+        status_leds->set(limelight::hal::StatusLed::POWER,
+                         limelight::hal::StatusState::OFF);
+        status_leds->set(limelight::hal::StatusLed::HEARTBEAT,
+                         limelight::hal::StatusState::OFF);
+        status_leds->set(limelight::hal::StatusLed::LINK,
+                         limelight::hal::StatusState::OFF);
+    }
+    if (have_imu) imu->shutdown();
 
     return 0;
 }

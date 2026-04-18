@@ -336,6 +336,16 @@ void NTPublisher::publish(const PipelineResult& result,
     if (!result.botpose_red.empty())  impl_->pubBotposeRed.Set(result.botpose_red);
     if (!result.botpose_blue.empty()) impl_->pubBotposeBlue.Set(result.botpose_blue);
 
+    // MegaTag2 / IMU-fused botpose.  Only populated when a tag was matched
+    // against the field map and an IMU yaw source was available for this
+    // frame (see FiducialPipeline::process).
+    if (!result.botpose_orb.empty())
+        impl_->pubBotposeOrb.Set(result.botpose_orb);
+    if (!result.botpose_orb_wpired.empty())
+        impl_->pubBotposeOrbRed.Set(result.botpose_orb_wpired);
+    if (!result.botpose_orb_wpiblue.empty())
+        impl_->pubBotposeOrbBlue.Set(result.botpose_orb_wpiblue);
+
     // --- Target-space poses ----------------------------------------------
     if (!result.targetpose_cameraspace.empty())
         impl_->pubTargetPoseCS.Set(result.targetpose_cameraspace);

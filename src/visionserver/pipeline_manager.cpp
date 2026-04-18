@@ -111,11 +111,44 @@ void PipelineManager::rebuildPipeline(int index) {
         pipelines_[index] = Pipeline::create(configs_[index].pipeline_type);
         pipelines_[index]->setSlotIndex(index);
         pipelines_[index]->setFieldMap(field_maps_[index]);
+        // Seed latched MegaTag2 state before configure so the first frame
+        // already has the IMU hookup.
+        pipelines_[index]->setImu(imu_);
+        if (robot_orientation_valid_) {
+            pipelines_[index]->setRobotOrientation(robot_orientation_);
+        }
+        pipelines_[index]->setImuMode(imu_mode_);
+        pipelines_[index]->setImuAssistAlpha(imu_assist_alpha_);
         pipelines_[index]->configure(configs_[index]);
     } catch (const std::exception& e) {
         spdlog::warn("Cannot create pipeline {}: {}", index, e.what());
         pipelines_[index] = nullptr;
     }
+}
+
+void PipelineManager::setImu(const hal::Imu* imu) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    imu_ = imu;
+    for (auto& p : pipelines_) if (p) p->setImu(imu);
+}
+
+void PipelineManager::setRobotOrientation(const std::array<double, 6>& o) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    robot_orientation_       = o;
+    robot_orientation_valid_ = true;
+    for (auto& p : pipelines_) if (p) p->setRobotOrientation(o);
+}
+
+void PipelineManager::setImuMode(int mode) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    imu_mode_ = mode;
+    for (auto& p : pipelines_) if (p) p->setImuMode(mode);
+}
+
+void PipelineManager::setImuAssistAlpha(double alpha) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    imu_assist_alpha_ = alpha;
+    for (auto& p : pipelines_) if (p) p->setImuAssistAlpha(alpha);
 }
 
 } // namespace limelight

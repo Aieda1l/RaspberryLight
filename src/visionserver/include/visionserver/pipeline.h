@@ -3,9 +3,12 @@
 #include "pipeline_config.h"
 #include "field_map.h"
 #include <opencv2/core.hpp>
+#include <array>
 #include <string>
 #include <vector>
 #include <memory>
+
+namespace limelight::hal { class Imu; }
 
 namespace limelight {
 
@@ -23,6 +26,12 @@ struct PipelineResult {
     std::vector<double> botpose;       // Robot pose in field space [x,y,z,rx,ry,rz]
     std::vector<double> botpose_blue;  // Blue alliance origin
     std::vector<double> botpose_red;   // Red alliance origin
+    // MegaTag2 (IMU-fused) pose.  Same [x,y,z,rx,ry,rz] layout as botpose,
+    // but yaw is forced to the fused IMU yaw and x/y/z are re-solved against
+    // that constraint.  Empty when no IMU yaw is available.
+    std::vector<double> botpose_orb;
+    std::vector<double> botpose_orb_wpiblue;
+    std::vector<double> botpose_orb_wpired;
     std::vector<double> targetpose_robotspace;
     std::vector<double> targetpose_cameraspace;
 
@@ -58,6 +67,18 @@ public:
     // resource lookup) and which field map to use (for 3D pose).
     virtual void setSlotIndex(int /*index*/) {}
     virtual void setFieldMap(const FieldMap& /*fmap*/) {}
+
+    // MegaTag2 / ORB inputs.  The pipeline manager fans these out to every
+    // pipeline; non-fiducial pipelines ignore them.
+    //   imu                  -- on-hat IMU (nullable: no hat = classic only)
+    //   robot_orientation    -- [yaw, yawRate, pitch, pitchRate, roll, rollRate]
+    //                            pushed from robot code via NT
+    //   imu_mode             -- 0..4, see kImuMode* constants
+    //   imu_assist_alpha     -- blend factor in assist modes, 0..1
+    virtual void setImu(const hal::Imu* /*imu*/) {}
+    virtual void setRobotOrientation(const std::array<double, 6>& /*orient*/) {}
+    virtual void setImuMode(int /*mode*/) {}
+    virtual void setImuAssistAlpha(double /*alpha*/) {}
 
     // Factory
     static std::unique_ptr<Pipeline> create(const std::string& pipeline_type);

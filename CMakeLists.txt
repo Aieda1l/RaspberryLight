@@ -128,6 +128,8 @@ elseif(LIMELIGHT_PLATFORM STREQUAL "OPI5")
         src/hal/platforms/opi5/ws2812_driver.cpp
         src/hal/platforms/opi5/opi5_thermal.cpp
         src/hal/platforms/opi5/opi5_npu.cpp
+        src/hal/platforms/opi5/opi5_imu_bno085.cpp
+        src/hal/platforms/opi5/opi5_status_leds.cpp
     )
 endif()
 

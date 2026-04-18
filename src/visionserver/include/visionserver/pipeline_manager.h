@@ -11,6 +11,8 @@
 #include <mutex>
 #include <string>
 
+namespace limelight::hal { class Imu; }
+
 namespace limelight {
 
 constexpr int NUM_PIPELINES = 10;
@@ -51,6 +53,13 @@ public:
     // Process frame through active pipeline
     PipelineResult processFrame(const cv::Mat& frame);
 
+    // MegaTag2 fan-out.  Stored on the manager and pushed to every pipeline
+    // on configure, plus routed through whenever an NT callback fires.
+    void setImu(const hal::Imu* imu);
+    void setRobotOrientation(const std::array<double, 6>& orient);
+    void setImuMode(int mode);
+    void setImuAssistAlpha(double alpha);
+
 private:
     void rebuildPipeline(int index);
 
@@ -59,6 +68,13 @@ private:
     std::array<FieldMap, NUM_PIPELINES> field_maps_;
     std::atomic<int> active_index_{0};
     mutable std::mutex mutex_;
+
+    // Latched MegaTag2 inputs so newly-built pipelines inherit them.
+    const hal::Imu*               imu_ = nullptr;
+    std::array<double, 6>         robot_orientation_{};
+    bool                          robot_orientation_valid_ = false;
+    int                           imu_mode_ = 0;
+    double                        imu_assist_alpha_ = 1.0;
 };
 
 } // namespace limelight

@@ -44,14 +44,40 @@ std::string readStringFile(const fs::path& p) {
     return s;
 }
 
+// Scan /sys/class/pwm for the hat-attached hardware PWM fan channel.
+// Returns the path to the pwmN directory (not to duty_cycle) so the
+// caller can read `period` and write `duty_cycle`/`enable` separately.
+fs::path findHwPwm() {
+    const char* override_path = std::getenv("LL_FAN_PWM");
+    if (override_path && *override_path) {
+        const fs::path p = override_path;
+        if (fs::exists(p)) return p;
+    }
+    const fs::path root = "/sys/class/pwm";
+    if (!fs::exists(root)) return {};
+    for (const auto& chip : fs::directory_iterator(root)) {
+        const std::string name = chip.path().filename().string();
+        if (name.rfind("pwmchip", 0) != 0) continue;
+        // Prefer an already-exported pwm0.
+        const fs::path pwm0 = chip.path() / "pwm0";
+        if (fs::exists(pwm0)) return pwm0;
+        // Otherwise try to export channel 0.
+        if (writeIntFile(chip.path() / "export", 0) && fs::exists(pwm0)) {
+            return pwm0;
+        }
+    }
+    return {};
+}
+
 // Scan /sys/class/hwmon for a PWM-capable hwmon node controlling a fan.
 // Return an empty path if nothing suitable is found.
 fs::path findFanPwm() {
     const fs::path hwmon_root = "/sys/class/hwmon";
-    if (!fs::exists(hwmon_root)) return {};
-    for (const auto& e : fs::directory_iterator(hwmon_root)) {
-        const fs::path pwm = e.path() / "pwm1";
-        if (fs::exists(pwm)) return pwm;
+    if (fs::exists(hwmon_root)) {
+        for (const auto& e : fs::directory_iterator(hwmon_root)) {
+            const fs::path pwm = e.path() / "pwm1";
+            if (fs::exists(pwm)) return pwm;
+        }
     }
     // Fallback: cooling_deviceN whose type contains "fan" or "pwm".
     const fs::path cool_root = "/sys/class/thermal";
@@ -97,11 +123,27 @@ bool Opi5Thermal::init() {
     }
     spdlog::info("Opi5Thermal: found {} thermal zones", zone_paths_.size());
 
-    fan_pwm_path_ = findFanPwm().string();
-    if (!fan_pwm_path_.empty()) {
-        spdlog::info("Opi5Thermal: fan control via {}", fan_pwm_path_);
+    // Prefer hardware PWM if available (hat wiring).  Fall back to
+    // hwmon / cooling_device for dev boards without the hat.
+    const fs::path hw_pwm_dir = findHwPwm();
+    if (!hw_pwm_dir.empty()) {
+        constexpr long kPeriodNs = 40000;  // 25 kHz, standard 4-pin fan
+        writeIntFile(hw_pwm_dir / "period",     static_cast<int>(kPeriodNs));
+        writeIntFile(hw_pwm_dir / "duty_cycle", 0);
+        writeIntFile(hw_pwm_dir / "enable",     1);
+        fan_pwm_path_      = (hw_pwm_dir / "duty_cycle").string();
+        fan_pwm_period_ns_ = kPeriodNs;
+        fan_is_hw_pwm_     = true;
+        spdlog::info("Opi5Thermal: fan control via hardware PWM ({} @ {} ns period)",
+                     fan_pwm_path_, kPeriodNs);
     } else {
-        spdlog::info("Opi5Thermal: no fan control node found — setFanSpeed is a no-op");
+        fan_pwm_path_  = findFanPwm().string();
+        fan_is_hw_pwm_ = false;
+        if (!fan_pwm_path_.empty()) {
+            spdlog::info("Opi5Thermal: fan control via {} (hwmon/cooling)", fan_pwm_path_);
+        } else {
+            spdlog::info("Opi5Thermal: no fan control node found — setFanSpeed is a no-op");
+        }
     }
     return true;
 }
@@ -146,6 +188,14 @@ double Opi5Thermal::readGpuTemp() {
 void Opi5Thermal::setFanSpeed(int percent) {
     fan_speed_ = std::max(0, std::min(100, percent));
     if (fan_pwm_path_.empty()) return;
+
+    // Hardware PWM: duty_cycle is in nanoseconds, scaled against the
+    // period we wrote at init().
+    if (fan_is_hw_pwm_) {
+        const long duty = (fan_pwm_period_ns_ * fan_speed_) / 100;
+        writeIntFile(fan_pwm_path_, static_cast<int>(duty));
+        return;
+    }
 
     // Two flavours of sysfs fan node to worry about:
     //   * hwmonN/pwm1       -- byte value 0..255

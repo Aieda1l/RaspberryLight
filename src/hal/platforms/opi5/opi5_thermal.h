@@ -34,8 +34,12 @@ private:
     // Pairs of (zone type, /sys/.../temp) sorted by type.
     std::vector<std::pair<std::string, std::string>> zone_paths_;
     // sysfs path we write to when setFanSpeed is called.  Empty if none.
+    // For hardware PWM nodes (/sys/class/pwm/pwmchipN/pwmM/duty_cycle) the
+    // period is cached so setFanSpeed can compute duty_cycle = period*pct/100.
     std::string fan_pwm_path_;
     int fan_speed_ = 0;
+    long fan_pwm_period_ns_ = 0;   // 0 when fan_pwm_path_ is not a PWM node
+    bool fan_is_hw_pwm_ = false;
 };
 
 }  // namespace limelight::hal
