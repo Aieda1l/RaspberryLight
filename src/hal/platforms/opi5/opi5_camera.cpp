@@ -9,6 +9,8 @@
 
 #include "opi5_camera.h"
 
+#include <spdlog/spdlog.h>
+
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -16,6 +18,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <poll.h>
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <dirent.h>
@@ -218,8 +221,13 @@ cv::Mat Opi5Camera::getFrame(int timeout_ms) {
     cv::Mat frame(height_, width_, CV_8UC1, buffers_[buf.index].start);
     cv::Mat result = frame.clone();
 
-    // Re-queue buffer
-    ioctl(fd_, VIDIOC_QBUF, &buf);
+    // Re-queue buffer.  If this fails the kernel has lost track of it and
+    // the mmap ring will run dry within N frames; log loudly so the user
+    // can see the cause instead of watching the stream silently freeze.
+    if (ioctl(fd_, VIDIOC_QBUF, &buf) < 0) {
+        spdlog::error("V4L2 VIDIOC_QBUF failed (buf={}): {}",
+                      buf.index, std::strerror(errno));
+    }
 
     return result;
 }

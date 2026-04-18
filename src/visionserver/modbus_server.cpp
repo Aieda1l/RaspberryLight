@@ -33,9 +33,11 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 
 namespace limelight {
@@ -50,8 +52,28 @@ struct ModbusServer::Impl {
 // floating-point target data (tx, ty, etc.) into integer registers.
 static inline int16_t clampToI16(double v) {
     if (std::isnan(v)) return 0;
-    if (v >  32767.0) return  32767;
-    if (v < -32768.0) return -32768;
+    if (v >  32767.0) { return  32767; }
+    if (v < -32768.0) { return -32768; }
+    return static_cast<int16_t>(v);
+}
+
+// Same as clampToI16 but raises a rate-limited warning the first time each
+// named channel saturates, so users discover register rollover instead of
+// debugging a mystery value in robot code.
+static inline int16_t clampToI16Logged(double v, const char* name) {
+    if (std::isnan(v)) return 0;
+    if (v > 32767.0 || v < -32768.0) {
+        static std::atomic<uint64_t> warned{0};
+        const uint64_t bit = static_cast<uint64_t>(
+            std::hash<const char*>{}(name)) & 63u;
+        const uint64_t mask = 1ULL << bit;
+        if ((warned.fetch_or(mask) & mask) == 0) {
+            spdlog::warn("Modbus register {} saturated at {:.2f} (register "
+                         "is int16 — robot code will see clamped value)",
+                         name, v);
+        }
+        return (v > 0) ? 32767 : -32768;
+    }
     return static_cast<int16_t>(v);
 }
 
@@ -171,32 +193,34 @@ void ModbusServer::updateFromResult(const PipelineResult& result,
     r.fill(0);
 
     r[0] = result.has_target ? 1u : 0u;
-    r[1] = static_cast<uint16_t>(clampToI16(result.tx * 100.0));
-    r[2] = static_cast<uint16_t>(clampToI16(result.ty * 100.0));
-    r[3] = static_cast<uint16_t>(clampToI16(result.ta * 10.0));
+    r[1] = static_cast<uint16_t>(clampToI16Logged(result.tx * 100.0, "tx"));
+    r[2] = static_cast<uint16_t>(clampToI16Logged(result.ty * 100.0, "ty"));
+    r[3] = static_cast<uint16_t>(clampToI16Logged(result.ta * 10.0,  "ta"));
     r[4] = static_cast<uint16_t>(std::clamp(pipeline_latency_ms, 0.0, 65535.0));
     r[5] = static_cast<uint16_t>(std::clamp(capture_latency_ms, 0.0, 65535.0));
     r[6] = static_cast<uint16_t>(std::max(0, result.tid));
     r[7] = static_cast<uint16_t>(active_pipeline_index);
 
-    // Botpose (x_mm, y_mm, z_mm, rx_deg*10, ry_deg*10, rz_deg*10)
+    // Botpose (x_mm, y_mm, z_mm, rx_deg*10, ry_deg*10, rz_deg*10).  The
+    // *1000 scaling means any field > 32.767 m saturates — log it so users
+    // discover their arena-origin is on the wrong side of the field.
     if (result.botpose.size() >= 6) {
-        r[ 8] = static_cast<uint16_t>(clampToI16(result.botpose[0] * 1000.0));
-        r[ 9] = static_cast<uint16_t>(clampToI16(result.botpose[1] * 1000.0));
-        r[10] = static_cast<uint16_t>(clampToI16(result.botpose[2] * 1000.0));
-        r[11] = static_cast<uint16_t>(clampToI16(result.botpose[3] * 10.0));
-        r[12] = static_cast<uint16_t>(clampToI16(result.botpose[4] * 10.0));
-        r[13] = static_cast<uint16_t>(clampToI16(result.botpose[5] * 10.0));
+        r[ 8] = static_cast<uint16_t>(clampToI16Logged(result.botpose[0] * 1000.0, "botpose_x_mm"));
+        r[ 9] = static_cast<uint16_t>(clampToI16Logged(result.botpose[1] * 1000.0, "botpose_y_mm"));
+        r[10] = static_cast<uint16_t>(clampToI16Logged(result.botpose[2] * 1000.0, "botpose_z_mm"));
+        r[11] = static_cast<uint16_t>(clampToI16Logged(result.botpose[3] * 10.0,   "botpose_rx"));
+        r[12] = static_cast<uint16_t>(clampToI16Logged(result.botpose[4] * 10.0,   "botpose_ry"));
+        r[13] = static_cast<uint16_t>(clampToI16Logged(result.botpose[5] * 10.0,   "botpose_rz"));
     }
 
     // Target pose in camera space (6-DOF)
     if (result.targetpose_cameraspace.size() >= 6) {
-        r[14] = static_cast<uint16_t>(clampToI16(result.targetpose_cameraspace[0] * 1000.0));
-        r[15] = static_cast<uint16_t>(clampToI16(result.targetpose_cameraspace[1] * 1000.0));
-        r[16] = static_cast<uint16_t>(clampToI16(result.targetpose_cameraspace[2] * 1000.0));
-        r[17] = static_cast<uint16_t>(clampToI16(result.targetpose_cameraspace[3] * 10.0));
-        r[18] = static_cast<uint16_t>(clampToI16(result.targetpose_cameraspace[4] * 10.0));
-        r[19] = static_cast<uint16_t>(clampToI16(result.targetpose_cameraspace[5] * 10.0));
+        r[14] = static_cast<uint16_t>(clampToI16Logged(result.targetpose_cameraspace[0] * 1000.0, "tgt_cam_x_mm"));
+        r[15] = static_cast<uint16_t>(clampToI16Logged(result.targetpose_cameraspace[1] * 1000.0, "tgt_cam_y_mm"));
+        r[16] = static_cast<uint16_t>(clampToI16Logged(result.targetpose_cameraspace[2] * 1000.0, "tgt_cam_z_mm"));
+        r[17] = static_cast<uint16_t>(clampToI16Logged(result.targetpose_cameraspace[3] * 10.0,   "tgt_cam_rx"));
+        r[18] = static_cast<uint16_t>(clampToI16Logged(result.targetpose_cameraspace[4] * 10.0,   "tgt_cam_ry"));
+        r[19] = static_cast<uint16_t>(clampToI16Logged(result.targetpose_cameraspace[5] * 10.0,   "tgt_cam_rz"));
     }
 }
 

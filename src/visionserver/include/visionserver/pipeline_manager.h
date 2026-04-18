@@ -33,6 +33,7 @@ public:
     // DEPRECATED: returns a reference to an array element that the caller
     // *must not* use across a pipeline switch or a concurrent mutateConfig
     // call. Prefer getConfigSnapshot(index) for new code.
+    [[deprecated("races with REST/NT mutation; use getConfigSnapshot() instead")]]
     const PipelineConfig& getActiveConfig() const;
 
     // Thread-safe snapshot of the config at `index`. Returns a copy so the
@@ -42,6 +43,7 @@ public:
     // DEPRECATED: returns a mutable reference without holding the mutex. New
     // code must route all mutation through mutateConfig so that reads in the
     // vision thread don't race with writes from REST/NT callbacks.
+    [[deprecated("unsynchronized mutation; use mutateConfig() instead")]]
     PipelineConfig& getConfig(int index);
 
     // Atomically mutate the config at `index` under the internal mutex and
@@ -59,6 +61,12 @@ public:
     void setRobotOrientation(const std::array<double, 6>& orient);
     void setImuMode(int mode);
     void setImuAssistAlpha(double alpha);
+
+    // Frame capture timestamp (CLOCK_MONOTONIC ns).  main() calls this
+    // immediately after camera->getFrame() so the fiducial pipeline can
+    // pull the contemporaneous IMU sample from the ring buffer instead of
+    // "latest" — important when the vision loop runs slower than the IMU.
+    void setFrameCaptureTimestampNs(uint64_t ts_ns);
 
 private:
     void rebuildPipeline(int index);

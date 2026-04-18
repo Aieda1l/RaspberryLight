@@ -80,6 +80,12 @@ public:
     virtual void setImuMode(int /*mode*/) {}
     virtual void setImuAssistAlpha(double /*alpha*/) {}
 
+    // Optional: frame capture timestamp in CLOCK_MONOTONIC ns, used by
+    // fiducial pipelines to look up the IMU sample that was contemporaneous
+    // with the shutter rather than "latest."  Set to 0 to fall back to
+    // Imu::latest().
+    virtual void setFrameCaptureTimestampNs(uint64_t /*ts_ns*/) {}
+
     // Factory
     static std::unique_ptr<Pipeline> create(const std::string& pipeline_type);
 };

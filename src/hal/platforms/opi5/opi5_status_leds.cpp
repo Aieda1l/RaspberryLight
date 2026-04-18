@@ -21,6 +21,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <unordered_set>
 
 namespace limelight::hal {
 
@@ -79,12 +80,11 @@ Opi5StatusLeds::~Opi5StatusLeds() {
             gpiod_line_release(s.lines[i]);
         }
     }
+    // Close each unique chip handle exactly once (multiple LEDs may share).
+    std::unordered_set<gpiod_chip*> closed;
     for (int i = 0; i < static_cast<int>(StatusLed::COUNT); ++i) {
-        if (s.chips[i]) {
-            // Only close each unique chip once (multiple LEDs may share one).
-            bool already = false;
-            for (int j = 0; j < i; ++j) if (s.chips[j] == s.chips[i]) already = true;
-            if (!already) gpiod_chip_close(s.chips[i]);
+        if (s.chips[i] && closed.insert(s.chips[i]).second) {
+            gpiod_chip_close(s.chips[i]);
         }
     }
     delete static_cast<StatusLedsState*>(impl_);

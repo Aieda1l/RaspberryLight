@@ -99,6 +99,8 @@ void from_json(const nlohmann::json& j, PipelineConfig& c) {
     JSON_GET_OPT(j, bottype, c);
     JSON_GET_OPT(j, botfloorsnap, c);
     JSON_GET_OPT(j, calibration_type, c);
+    JSON_GET_OPT(j, hfov_deg, c);
+    JSON_GET_OPT(j, vfov_deg, c);
     JSON_GET_OPT(j, x_outlier_miqr, c);
     JSON_GET_OPT(j, y_outlier_miqr, c);
     JSON_GET_OPT(j, python_snapscript_name, c);
@@ -160,6 +162,7 @@ void to_json(nlohmann::json& j, const PipelineConfig& c) {
         {"botwidth", c.botwidth}, {"botlength", c.botlength}, {"bottype", c.bottype},
         {"botfloorsnap", c.botfloorsnap},
         {"calibration_type", c.calibration_type},
+        {"hfov_deg", c.hfov_deg}, {"vfov_deg", c.vfov_deg},
         {"x_outlier_miqr", c.x_outlier_miqr}, {"y_outlier_miqr", c.y_outlier_miqr},
         {"python_snapscript_name", c.python_snapscript_name}
     };

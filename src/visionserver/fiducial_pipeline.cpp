@@ -74,13 +74,23 @@ void FiducialPipeline::setImuAssistAlpha(double alpha) {
                             std::memory_order_relaxed);
 }
 
+void FiducialPipeline::setFrameCaptureTimestampNs(uint64_t ts_ns) {
+    frame_capture_ts_ns_.store(ts_ns, std::memory_order_release);
+}
+
 double FiducialPipeline::fusedYawRad(bool& out_valid) const {
     const int    mode  = imu_mode_.load(std::memory_order_relaxed);
     const bool   ext_v = robot_yaw_valid_.load(std::memory_order_acquire);
     const double ext   = robot_yaw_rad_.load(std::memory_order_relaxed);
 
     hal::Orientation int_sample{};
-    if (imu_) int_sample = imu_->latest();
+    if (imu_) {
+        // Prefer the sample contemporaneous with frame capture so a slow
+        // vision loop doesn't fuse with yaw from "now."  Fall back to the
+        // latest sample when no capture timestamp has been latched.
+        const uint64_t ts = frame_capture_ts_ns_.load(std::memory_order_acquire);
+        int_sample = (ts != 0) ? imu_->sampleAt(ts) : imu_->latest();
+    }
     const bool   int_v = int_sample.valid;
     const double in    = int_sample.yaw_rad;
 
@@ -140,9 +150,8 @@ std::vector<cv::Point3f> tagObjectCorners(double size_mm) {
     };
 }
 
-cv::Mat pinholeCameraMatrix(int W, int H) {
-    // 60° horizontal FOV.
-    const double fx = W / (2.0 * std::tan(30.0 * CV_PI / 180.0));
+cv::Mat pinholeCameraMatrix(int W, int H, double hfov_deg) {
+    const double fx = W / (2.0 * std::tan(hfov_deg * 0.5 * CV_PI / 180.0));
     const double fy = fx;  // square pixels
     const double cx = W / 2.0;
     const double cy = H / 2.0;
@@ -196,9 +205,14 @@ PipelineResult FiducialPipeline::process(const cv::Mat& frame) {
     zarray_t* detections = apriltag_detector_detect(detector_, &img);
     const int n = zarray_size(detections);
 
-    // Lazy camera intrinsics.
-    if (camera_matrix_.empty()) {
-        camera_matrix_ = pinholeCameraMatrix(frame.cols, frame.rows);
+    // Intrinsics are normally built in configure() when a calibration file
+    // lands.  The first frame of a freshly-constructed pipeline can arrive
+    // before the resolution is known, so rebuild here if the frame shape
+    // drifted from whatever was cached.
+    if (camera_matrix_.empty() ||
+        std::abs(camera_matrix_.at<double>(0, 2) - frame.cols / 2.0) > 0.5 ||
+        std::abs(camera_matrix_.at<double>(1, 2) - frame.rows / 2.0) > 0.5) {
+        camera_matrix_ = pinholeCameraMatrix(frame.cols, frame.rows, cfg_.hfov_deg);
         dist_coeffs_   = cv::Mat::zeros(4, 1, CV_64F);
     }
 
@@ -252,9 +266,8 @@ PipelineResult FiducialPipeline::process(const cv::Mat& frame) {
         // tx/ty: center offset in degrees (pinhole small-angle approx).
         const double dx = best->c[0] - frame.cols / 2.0;
         const double dy = frame.rows / 2.0 - best->c[1];
-        const double fov_h = 60.0, fov_v = 45.0;
-        result.tx = (dx / frame.cols) * fov_h;
-        result.ty = (dy / frame.rows) * fov_v;
+        result.tx = (dx / frame.cols) * cfg_.hfov_deg;
+        result.ty = (dy / frame.rows) * cfg_.vfov_deg;
         result.ta = best_area / (frame.cols * frame.rows) * 100.0;
 
         // 3D pose via solvePnP.

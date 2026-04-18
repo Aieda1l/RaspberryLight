@@ -43,9 +43,12 @@ constexpr uint16_t kNibbleLut[16] = {
     0b110'110'110'110,  // 0xF
 };
 
-// >=50 us low latches the frame.  At 2.4 MHz one byte = 3.33 us, so 24
-// bytes of 0x00 = 80 us.  Give ourselves margin (some clones want 80 us).
-constexpr int kResetBytes = 24;
+// Reset / latch padding.  WS2812B datasheet says >=50 us low; SK6812 and
+// many WS2812 clones want >=80 us.  At 2.4 MHz one byte = 3.33 us, so 32
+// bytes of 0x00 = ~106 us — enough headroom for every strip I've tested
+// (SK6812 RGBW, WS2812B V5, WS2813, BTF-Lighting clones) without causing
+// visible flicker from overly long resets.
+constexpr int kResetBytes = 32;
 
 }  // namespace
 

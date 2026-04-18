@@ -254,42 +254,54 @@ bool NTPublisher::start() {
         impl_->listeners.push_back(l);
     };
 
-    auto& cb = impl_->cb;
-    if (cb.on_pipeline)          subDbl(kInPipeline,       [&](double v) { cb.on_pipeline(static_cast<int>(v)); });
-    if (cb.on_led_mode)          subDbl(kInLedMode,        [&](double v) { cb.on_led_mode(static_cast<int>(v)); });
-    if (cb.on_crosshairs)        subDbl(kInCrosshairs,     [&](double v) { cb.on_crosshairs(static_cast<int>(v)); });
-    if (cb.on_stream)            subDbl(kInStream,         [&](double v) { cb.on_stream(static_cast<int>(v)); });
-    if (cb.on_snapshot)          subDbl(kInSnapshot,       [&](double v) { cb.on_snapshot(static_cast<int>(v)); });
-    if (cb.on_priority_id)       subDbl(kInPriorityId,     [&](double v) { cb.on_priority_id(static_cast<int>(v)); });
-    if (cb.on_llrobot)           subDArr(kInLlRobot,       [&](std::vector<double> v) { cb.on_llrobot(std::move(v)); });
-    if (cb.on_llpython)          subDArr(kInLlPython,      [&](std::vector<double> v) { cb.on_llpython(std::move(v)); });
-    if (cb.on_fiducial_id_filters)
-        subDArr(kInFiducialIdFilters, [&](std::vector<double> v) { cb.on_fiducial_id_filters(std::move(v)); });
-    if (cb.on_fiducial_downscale) subDbl(kInFiducialDownscale, [&](double v) { cb.on_fiducial_downscale(v); });
-    if (cb.on_fiducial_offset)
-        subDArr(kInFiducialOffset, [&](std::vector<double> v) { cb.on_fiducial_offset(std::move(v)); });
-    if (cb.on_imu_mode)          subDbl(kInImuMode,        [&](double v) { cb.on_imu_mode(static_cast<int>(v)); });
-    if (cb.on_imu_assist_alpha)  subDbl(kInImuAssistAlpha, [&](double v) { cb.on_imu_assist_alpha(v); });
-    if (cb.on_throttle)          subDbl(kInThrottle,       [&](double v) { cb.on_throttle(v); });
-    if (cb.on_keystone)          subDArr(kInKeystone,      [&](std::vector<double> v) { cb.on_keystone(std::move(v)); });
-    if (cb.on_rewind_enable)     subDbl(kInRewindEnable,   [&](double v) { cb.on_rewind_enable(static_cast<int>(v)); });
-    if (cb.on_capture_rewind)    subDbl(kInCaptureRewind,  [&](double v) { cb.on_capture_rewind(static_cast<int>(v)); });
+    // Re-fetching impl_->cb inside each listener protects against a caller
+    // swapping the Callbacks struct via setCallbacks() after start().  The
+    // original implementation copied the std::function by reference, so a
+    // post-start reassignment left dangling slots that threw bad_function_call.
+    Impl* ip = impl_.get();
+    auto hasCb  = [ip](auto Callbacks::* m) { return static_cast<bool>(ip->cb.*m); };
+    auto fireD  = [ip](auto Callbacks::* m, double v) {
+        if (ip->cb.*m) (ip->cb.*m)(v);
+    };
+    auto fireI  = [ip](auto Callbacks::* m, int v) {
+        if (ip->cb.*m) (ip->cb.*m)(v);
+    };
+    auto fireV  = [ip](auto Callbacks::* m, std::vector<double> v) {
+        if (ip->cb.*m) (ip->cb.*m)(std::move(v));
+    };
+    auto fireA6 = [ip](auto Callbacks::* m, std::vector<double> v) {
+        if (ip->cb.*m) {
+            std::array<double, 6> arr{};
+            for (size_t i = 0; i < std::min<size_t>(6, v.size()); ++i) arr[i] = v[i];
+            (ip->cb.*m)(arr);
+        }
+    };
 
-    // 6-element fixed arrays (robot_orientation_set, camerapose_robotspace_set)
-    if (cb.on_robot_orientation) {
-        subDArr(kInRobotOrientation, [&](std::vector<double> v) {
-            std::array<double, 6> arr{};
-            for (size_t i = 0; i < std::min<size_t>(6, v.size()); ++i) arr[i] = v[i];
-            cb.on_robot_orientation(arr);
-        });
-    }
-    if (cb.on_camerapose_robotspace) {
-        subDArr(kInCamPoseRobotSpaceSet, [&](std::vector<double> v) {
-            std::array<double, 6> arr{};
-            for (size_t i = 0; i < std::min<size_t>(6, v.size()); ++i) arr[i] = v[i];
-            cb.on_camerapose_robotspace(arr);
-        });
-    }
+    if (hasCb(&Callbacks::on_pipeline))     subDbl(kInPipeline,   [fireI](double v) { fireI(&Callbacks::on_pipeline,    static_cast<int>(v)); });
+    if (hasCb(&Callbacks::on_led_mode))     subDbl(kInLedMode,    [fireI](double v) { fireI(&Callbacks::on_led_mode,    static_cast<int>(v)); });
+    if (hasCb(&Callbacks::on_crosshairs))   subDbl(kInCrosshairs, [fireI](double v) { fireI(&Callbacks::on_crosshairs,  static_cast<int>(v)); });
+    if (hasCb(&Callbacks::on_stream))       subDbl(kInStream,     [fireI](double v) { fireI(&Callbacks::on_stream,      static_cast<int>(v)); });
+    if (hasCb(&Callbacks::on_snapshot))     subDbl(kInSnapshot,   [fireI](double v) { fireI(&Callbacks::on_snapshot,    static_cast<int>(v)); });
+    if (hasCb(&Callbacks::on_priority_id))  subDbl(kInPriorityId, [fireI](double v) { fireI(&Callbacks::on_priority_id, static_cast<int>(v)); });
+    if (hasCb(&Callbacks::on_llrobot))      subDArr(kInLlRobot,   [fireV](std::vector<double> v) { fireV(&Callbacks::on_llrobot,  std::move(v)); });
+    if (hasCb(&Callbacks::on_llpython))     subDArr(kInLlPython,  [fireV](std::vector<double> v) { fireV(&Callbacks::on_llpython, std::move(v)); });
+    if (hasCb(&Callbacks::on_fiducial_id_filters))
+        subDArr(kInFiducialIdFilters, [fireV](std::vector<double> v) { fireV(&Callbacks::on_fiducial_id_filters, std::move(v)); });
+    if (hasCb(&Callbacks::on_fiducial_downscale))
+        subDbl(kInFiducialDownscale, [fireD](double v) { fireD(&Callbacks::on_fiducial_downscale, v); });
+    if (hasCb(&Callbacks::on_fiducial_offset))
+        subDArr(kInFiducialOffset, [fireV](std::vector<double> v) { fireV(&Callbacks::on_fiducial_offset, std::move(v)); });
+    if (hasCb(&Callbacks::on_imu_mode))         subDbl(kInImuMode,        [fireI](double v) { fireI(&Callbacks::on_imu_mode,      static_cast<int>(v)); });
+    if (hasCb(&Callbacks::on_imu_assist_alpha)) subDbl(kInImuAssistAlpha, [fireD](double v) { fireD(&Callbacks::on_imu_assist_alpha, v); });
+    if (hasCb(&Callbacks::on_throttle))         subDbl(kInThrottle,       [fireD](double v) { fireD(&Callbacks::on_throttle,      v); });
+    if (hasCb(&Callbacks::on_keystone))         subDArr(kInKeystone,      [fireV](std::vector<double> v) { fireV(&Callbacks::on_keystone, std::move(v)); });
+    if (hasCb(&Callbacks::on_rewind_enable))    subDbl(kInRewindEnable,   [fireI](double v) { fireI(&Callbacks::on_rewind_enable, static_cast<int>(v)); });
+    if (hasCb(&Callbacks::on_capture_rewind))   subDbl(kInCaptureRewind,  [fireI](double v) { fireI(&Callbacks::on_capture_rewind, static_cast<int>(v)); });
+
+    if (hasCb(&Callbacks::on_robot_orientation))
+        subDArr(kInRobotOrientation, [fireA6](std::vector<double> v) { fireA6(&Callbacks::on_robot_orientation, std::move(v)); });
+    if (hasCb(&Callbacks::on_camerapose_robotspace))
+        subDArr(kInCamPoseRobotSpaceSet, [fireA6](std::vector<double> v) { fireA6(&Callbacks::on_camerapose_robotspace, std::move(v)); });
 
     spdlog::info("NT: client4 connected to {} (team={}), table=/{}",
                  nt_server_, team_number_, table_name_);

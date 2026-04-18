@@ -30,6 +30,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <ctime>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -275,6 +276,20 @@ int main(int argc, char* argv[]) {
 
         double capture_ms = std::chrono::duration<double, std::milli>(
                                 t_capture_end - t_capture_start).count();
+
+        // Latch frame capture timestamp in CLOCK_MONOTONIC ns so the fiducial
+        // pipeline can align IMU samples against shutter time via
+        // Imu::sampleAt() instead of racing against the latest read.  The
+        // camera HAL will eventually fill this in from V4L2 buffer metadata;
+        // until then this "captured-at-dequeue" stamp is better than nothing.
+        {
+            timespec ts{};
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            const uint64_t ts_ns =
+                static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL +
+                static_cast<uint64_t>(ts.tv_nsec);
+            pipeline_mgr.setFrameCaptureTimestampNs(ts_ns);
+        }
 
         auto t_pipe_start = std::chrono::steady_clock::now();
         auto result = pipeline_mgr.processFrame(frame);

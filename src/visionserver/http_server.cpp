@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -25,6 +26,16 @@
 namespace limelight {
 
 namespace {
+
+// Hard cap on request body size.  Large uploads (pipeline bundles, python
+// scripts, ChArUco images) go through /uploadPipeline etc.; anything beyond
+// 32 MiB is almost certainly a mistake or an attack.  Returns 413.
+constexpr size_t kMaxContentLength = 32 * 1024 * 1024;
+
+// Per-connection idle timeout.  Guards against slow-loris attacks — a
+// client that sends 1 byte/minute would otherwise pin a worker thread
+// forever.  Applied to both header read and body read.
+constexpr int kSocketTimeoutSec = 10;
 
 std::string toLower(const std::string& s) {
     std::string out = s;
@@ -250,6 +261,13 @@ void HttpServer::acceptLoop() {
 }
 
 void HttpServer::handleConnection(int fd) {
+    // Idle timeout on every recv — kernel-enforced, so a stuck client
+    // doesn't leak a thread.  Applies to both the header read below and
+    // the body read inside this function.
+    struct timeval tv{kSocketTimeoutSec, 0};
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
     std::string buf;
     size_t header_end = readHttpHeaders(fd, buf);
     if (header_end == 0) {
@@ -298,6 +316,23 @@ void HttpServer::handleConnection(int fd) {
         size_t clen = 0;
         try { clen = static_cast<size_t>(std::stoul(clen_it->second)); }
         catch (...) { clen = 0; }
+        if (clen > kMaxContentLength) {
+            // Refuse oversized requests BEFORE allocating the body.  Reply
+            // 413 so the client gets a useful error instead of a dropped
+            // connection.
+            HttpResponse too_large;
+            too_large.status = 413;
+            too_large.content_type = "application/json";
+            too_large.body = "{\"error\":\"payload too large\"}";
+            std::string reply = "HTTP/1.1 413 Payload Too Large\r\n"
+                                "Content-Type: application/json\r\n"
+                                "Content-Length: " +
+                                std::to_string(too_large.body.size()) +
+                                "\r\nConnection: close\r\n\r\n" + too_large.body;
+            ::send(fd, reply.data(), reply.size(), 0);
+            ::close(fd);
+            return;
+        }
         std::string body;
         if (buf.size() > header_end) {
             body.assign(buf.data() + header_end, buf.size() - header_end);

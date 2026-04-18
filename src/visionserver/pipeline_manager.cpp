@@ -151,4 +151,12 @@ void PipelineManager::setImuAssistAlpha(double alpha) {
     for (auto& p : pipelines_) if (p) p->setImuAssistAlpha(alpha);
 }
 
+void PipelineManager::setFrameCaptureTimestampNs(uint64_t ts_ns) {
+    // Per-frame, called right before processFrame. Only the active pipeline
+    // needs this — idle slots don't process, so skip the fan-out.
+    std::lock_guard<std::mutex> lock(mutex_);
+    const int idx = active_index_.load(std::memory_order_relaxed);
+    if (pipelines_[idx]) pipelines_[idx]->setFrameCaptureTimestampNs(ts_ns);
+}
+
 } // namespace limelight

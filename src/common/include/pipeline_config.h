@@ -127,6 +127,12 @@ struct PipelineConfig {
     // Calibration
     int calibration_type = 0;
 
+    // Camera optics (for the pinhole fallback when no calibration file is
+    // loaded).  Defaults match the stock Limelight 4 lens; override per-slot
+    // to support different OV9281 lens variants (2.8 mm / 4 mm / 6 mm).
+    double hfov_deg = 60.0;
+    double vfov_deg = 45.0;
+
     // Outlier rejection
     double x_outlier_miqr = 1.5;
     double y_outlier_miqr = 1.5;

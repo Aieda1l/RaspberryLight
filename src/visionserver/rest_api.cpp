@@ -303,7 +303,7 @@ void RestApi::registerRoutes() {
 HttpResponse RestApi::handleStatus(const HttpRequest&) {
     RestLiveState s;
     { std::lock_guard<std::mutex> lk(state_mu_); s = state_; }
-    const auto& cfg = mgr_.getActiveConfig();
+    const auto cfg = mgr_.getConfigSnapshot(s.active_pipeline_index);
     json j;
     j["status"]     = "ok";
     j["pipeline"]   = s.active_pipeline_index;

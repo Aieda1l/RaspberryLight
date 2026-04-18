@@ -60,6 +60,7 @@ public:
     void setRobotOrientation(const std::array<double, 6>& orient) override;
     void setImuMode(int mode) override;
     void setImuAssistAlpha(double alpha) override;
+    void setFrameCaptureTimestampNs(uint64_t ts_ns) override;
 
 private:
     void rebuildDetector();
@@ -88,6 +89,10 @@ private:
     std::atomic<bool>    robot_yaw_valid_{false};
     std::atomic<int>     imu_mode_{kImuModeExternal};
     std::atomic<double>  imu_assist_alpha_{1.0};
+    // CLOCK_MONOTONIC ns of the frame currently being processed, latched by
+    // PipelineManager right after camera->getFrame().  Zero means "no
+    // timestamp available, use latest()."
+    std::atomic<uint64_t> frame_capture_ts_ns_{0};
 };
 
 } // namespace limelight
